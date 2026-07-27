@@ -29,8 +29,13 @@ export const toolbarPlugin = (element: ToolbarLike, specs: ToolbarItem[], anchor
 
       // update runs on every transaction, keystrokes included. A few dry runs and
       // some idempotent DOM writes; do not add diffing before measuring a problem.
+      // The sync is deferred one microtask: the anchor reads focus, and a node
+      // view may move focus onto its own components synchronously *within* the
+      // dispatch — a same-tick sync would read the world mid-move and hide the
+      // strip exactly when a cell gets selected. The guard covers a destroy
+      // landing before the microtask runs.
       return {
-        update: () => element.sync(),
+        update: () => queueMicrotask(() => element.view && element.sync()),
         destroy: () => {
           // The host owns the element's existence, not the plugin — so let go,
           // don't remove.
