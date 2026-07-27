@@ -15,7 +15,7 @@
 /** A command as this element understands it: opaque, dry-runnable. */
 export type ToolbarCommand = (state: any, dispatch?: any, view?: any) => boolean
 
-/** One button, or a section separator. */
+/** One control, or a section separator. */
 export interface ToolbarSpec {
   id: string
   label: string
@@ -23,6 +23,16 @@ export interface ToolbarSpec {
   command: ToolbarCommand
   active?: (state: any) => boolean
   keys?: string[]
+  /** How to draw it. Absent means a button — the shape this element began with. */
+  kind?: 'button' | 'field' | 'select'
+  /** The uncollapsed readback: what a field shows, which member a select holds. */
+  value?: (state: any) => unknown
+  /** Commit: hand it what the control holds, it hands back a command to run. */
+  write?: (value: unknown) => ToolbarCommand
+  /** A select's members. */
+  options?: { value: string; label: string }[]
+  /** A field's input type ('text', 'number', 'url', …). */
+  type?: string
 }
 export type ToolbarItem = ToolbarSpec | { separator: true }
 
@@ -34,6 +44,12 @@ sheet.replaceSync(`
   :host {
     position: fixed;
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    /* Controls are wider than glyphs, so a mixed strip can outgrow the
+       viewport. It wraps rather than overflowing — a second row of chrome
+       is a smaller cost than a button nobody can reach. */
+    max-width: min(92vw, 680px);
     gap: 2px;
     padding: 4px;
     z-index: 30;
@@ -70,6 +86,28 @@ sheet.replaceSync(`
   button[data-id='em']     { font-style: italic; }
   button[data-id='code']   { font-family: ui-monospace, monospace; font-size: 11px; }
 
+  /* Fields and selects: the same 28px seat a button sits in, so a mixed
+     strip stays one line tall. Unlike a button they may take focus. */
+  input, select {
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 6px;
+    border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+    border-radius: 5px;
+    background: Canvas;
+    color: CanvasText;
+    font: inherit;
+    font-size: 13px;
+  }
+
+  input { width: 14ch; }
+  input[type='number'] { width: 6ch; }
+  input:focus, select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: -1px;
+  }
+  input:disabled, select:disabled { opacity: 0.35; }
+
   .separator {
     width: 1px;
     align-self: stretch;
@@ -78,10 +116,17 @@ sheet.replaceSync(`
   }
 `)
 
+const isControl = (node: EventTarget | null): boolean =>
+  node instanceof HTMLElement && (node.tagName === 'INPUT' || node.tagName === 'SELECT')
+
 export class PmToolbar extends HTMLElement {
   #shadow: ShadowRoot
   #specs: ToolbarItem[] = []
-  #buttons = new Map<string, HTMLButtonElement>()
+  #controls = new Map<string, HTMLElement>()
+  // What each control last showed or committed. A field must not re-commit
+  // a value it was merely handed by sync, and Enter must not commit twice
+  // because `change` fires behind it.
+  #shown = new Map<string, string>()
 
   /** The opaque host — assigned by the driving plugin. */
   view: any = null
@@ -93,9 +138,15 @@ export class PmToolbar extends HTMLElement {
     this.#shadow = this.attachShadow({ mode: 'open' })
     this.#shadow.adoptedStyleSheets = [sheet]
 
-    // Never take focus. A click here must not disturb what the host has targeted —
-    // without this, pressing a button destroys the very thing the command acts on.
-    this.#shadow.addEventListener('mousedown', (event) => event.preventDefault())
+    // Never take focus — *unless* the thing pressed is a field or a select,
+    // which cannot be typed into from a distance. The original law protected
+    // the host's target from a button press; a control keeps that protection
+    // a different way: the host's selection is state, not focus, and it
+    // survives the blur. Commits hand the caret back before they run.
+    this.#shadow.addEventListener('mousedown', (event) => {
+      if (isControl(event.target)) return
+      event.preventDefault()
+    })
   }
 
   // Not the constructor: `createElement` runs it synchronously and then throws
@@ -116,7 +167,8 @@ export class PmToolbar extends HTMLElement {
 
   #build() {
     this.#shadow.replaceChildren()
-    this.#buttons.clear()
+    this.#controls.clear()
+    this.#shown.clear()
 
     for (const spec of this.#specs) {
       if ('separator' in spec) {
@@ -125,37 +177,113 @@ export class PmToolbar extends HTMLElement {
         this.#shadow.append(rule)
         continue
       }
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.textContent = spec.label
-      button.dataset.id = spec.id
-      if (spec.title) button.title = spec.title
-      button.addEventListener('click', () => {
-        spec.command(this.view.state, this.view.dispatch, this.view)
-      })
-      this.#shadow.append(button)
-      this.#buttons.set(spec.id, button)
+      const control =
+        spec.kind === 'field' ? this.#field(spec) : spec.kind === 'select' ? this.#select(spec) : this.#button(spec)
+      control.dataset.id = spec.id
+      if (spec.title) control.title = spec.title
+      this.#shadow.append(control)
+      this.#controls.set(spec.id, control)
     }
+  }
+
+  #button(spec: ToolbarSpec): HTMLButtonElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = spec.label
+    button.addEventListener('click', () => {
+      spec.command(this.view.state, this.view.dispatch, this.view)
+    })
+    return button
+  }
+
+  // A field is the collector, inlined: it shows the value the verb reads back
+  // and commits what you leave in it. Escape restores, so an abandoned edit
+  // costs nothing.
+  #field(spec: ToolbarSpec): HTMLInputElement {
+    const input = document.createElement('input')
+    input.type = spec.type === 'number' ? 'number' : 'text'
+    input.placeholder = spec.label
+    input.setAttribute('aria-label', spec.title ?? spec.label)
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        this.#commit(spec, input.value)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        input.value = this.#shown.get(spec.id) ?? ''
+        this.view?.focus?.()
+      }
+      // Every other key is the field's own: the host must not see it.
+      event.stopPropagation()
+    })
+    input.addEventListener('change', () => this.#commit(spec, input.value))
+    return input
+  }
+
+  #select(spec: ToolbarSpec): HTMLSelectElement {
+    const select = document.createElement('select')
+    select.setAttribute('aria-label', spec.title ?? spec.label)
+    // The blank stands for "no member here" — a readback may be null, and a
+    // select with no matching option would otherwise show the first one and lie.
+    const blank = document.createElement('option')
+    blank.value = ''
+    blank.textContent = '—'
+    select.append(blank)
+    for (const option of spec.options ?? []) {
+      const el = document.createElement('option')
+      el.value = option.value
+      el.textContent = option.label
+      select.append(el)
+    }
+    select.addEventListener('change', () => {
+      if (select.value) this.#commit(spec, select.value)
+    })
+    return select
+  }
+
+  // Hand the caret back *before* running: a host that moves focus onto its own
+  // components during the dispatch (a node view claiming a cell) needs to see a
+  // focused editor while the transaction is applied, not one microtask later.
+  #commit(spec: ToolbarSpec, value: string) {
+    if (this.#shown.get(spec.id) === value) return
+    const command = spec.write?.(value)
+    if (!command) return
+    this.#shown.set(spec.id, value)
+    this.view?.focus?.()
+    command(this.view.state, this.view.dispatch, this.view)
   }
 
   // Called by the host whenever its state changes.
   sync() {
+    // A control that holds focus holds it *from* the host — whose anchor then
+    // sees an unfocused editor and says "nothing to show". Staying put is the
+    // truthful answer: the selection the strip serves has not gone anywhere.
+    const engaged = !!this.#shadow.activeElement
     const at = this.anchor?.(this.view)
-    if (!at) {
+    if (!at && !engaged) {
       this.hidden = true
       return
     }
-
-    this.hidden = false
-    this.style.top = `${at.top}px`
-    this.style.left = `${at.left}px`
+    if (at) {
+      this.hidden = false
+      this.style.top = `${at.top}px`
+      this.style.left = `${at.left}px`
+    }
 
     for (const spec of this.#specs) {
       if ('separator' in spec) continue
-      const button = this.#buttons.get(spec.id)
-      if (!button) continue
-      button.disabled = !spec.command(this.view.state)
-      button.setAttribute('aria-pressed', String(spec.active?.(this.view.state) ?? false))
+      const control = this.#controls.get(spec.id)
+      if (!control) continue
+      const available = !!spec.command(this.view.state)
+      ;(control as HTMLInputElement).disabled = !available
+      if (spec.kind === 'field' || spec.kind === 'select') {
+        const shown = String(spec.value?.(this.view.state) ?? '')
+        this.#shown.set(spec.id, shown)
+        // Never fight the typist: a focused control keeps what is in it.
+        if (this.#shadow.activeElement !== control) (control as HTMLInputElement).value = shown
+      } else {
+        control.setAttribute('aria-pressed', String(spec.active?.(this.view.state) ?? false))
+      }
     }
   }
 }
