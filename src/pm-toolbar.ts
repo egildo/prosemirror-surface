@@ -33,6 +33,11 @@ export interface ToolbarSpec {
   options?: { value: string; label: string }[]
   /** A field's input type ('text', 'number', 'url', …). */
   type?: string
+  /** How much room this control's domain needs: 'glyph' | 'bounded' | 'unbounded'.
+   *  The element sizes by this rather than guessing one width for every field. */
+  room?: string
+  /** What to do when the dry run says no: 'dim' (default) or 'hide'. */
+  unavailable?: 'dim' | 'hide'
 }
 export type ToolbarItem = ToolbarSpec | { separator: true }
 
@@ -63,6 +68,21 @@ sheet.replaceSync(`
 
   /* [hidden] is display:none in the UA sheet, which :host's display would win against. */
   :host([hidden]) { display: none; }
+
+  /* Docked: the bar sits in the document's flow where the host put it, instead
+     of floating by the selection. Same element, same specs, same commands —
+     only the manner differs, which is the point of naming manner at all. */
+  :host([data-placement='docked']) {
+    position: static;
+    transform: none;
+    max-width: none;
+    flex-wrap: nowrap;
+    border-radius: 6px;
+    box-shadow: none;
+  }
+  /* A control the dry run refuses, when the host asked for hiding rather than
+     dimming. Hidden here means gone from the layout, not merely faint. */
+  .gone { display: none; }
 
   button {
     min-width: 30px;
@@ -100,8 +120,15 @@ sheet.replaceSync(`
     font-size: 13px;
   }
 
+  /* Width is the control's own business, declared as room. The element used to
+     give every field 14ch, which is why a caption read "Listino — due po" and a
+     three-digit pixel value sat in a box built for a sentence. */
   input { width: 14ch; }
-  input[type='number'] { width: 6ch; }
+  input[data-room='bounded'] { width: 8ch; }
+  input[data-room='bounded'][type='number'] { width: 5ch; }
+  input[data-room='unbounded'] { width: 24ch; }
+  /* Docked, an unbounded field has the whole bar to grow into. */
+  :host([data-placement='docked']) input[data-room='unbounded'] { flex: 1; width: auto; min-width: 12ch; }
   input:focus, select:focus {
     outline: 2px solid Highlight;
     outline-offset: -1px;
@@ -132,6 +159,16 @@ export class PmToolbar extends HTMLElement {
   view: any = null
   /** Where to float — assigned by the driving plugin. */
   anchor: ToolbarAnchor | null = null
+
+  /** 'anchored' (default) floats by the selection; 'docked' sits in the flow
+   *  where the host placed it. The anchor still governs *whether* to show —
+   *  only positioning changes hands. */
+  get placement(): 'anchored' | 'docked' {
+    return this.dataset.placement === 'docked' ? 'docked' : 'anchored'
+  }
+  set placement(value: 'anchored' | 'docked') {
+    this.dataset.placement = value
+  }
 
   constructor() {
     super()
@@ -202,6 +239,7 @@ export class PmToolbar extends HTMLElement {
   #field(spec: ToolbarSpec): HTMLInputElement {
     const input = document.createElement('input')
     input.type = spec.type === 'number' ? 'number' : 'text'
+    if (spec.room) input.dataset.room = spec.room
     input.placeholder = spec.label
     input.setAttribute('aria-label', spec.title ?? spec.label)
     input.addEventListener('keydown', (event) => {
@@ -266,8 +304,12 @@ export class PmToolbar extends HTMLElement {
     }
     if (at) {
       this.hidden = false
-      this.style.top = `${at.top}px`
-      this.style.left = `${at.left}px`
+      // A docked bar takes its position from the document, not from us; the
+      // anchor's answer still decides whether it is there at all.
+      if (this.placement === 'anchored') {
+        this.style.top = `${at.top}px`
+        this.style.left = `${at.left}px`
+      }
     }
 
     for (const spec of this.#specs) {
@@ -276,6 +318,11 @@ export class PmToolbar extends HTMLElement {
       if (!control) continue
       const available = !!spec.command(this.view.state)
       ;(control as HTMLInputElement).disabled = !available
+      // Dim or vanish, the host's call. Hiding is what lets one strip serve
+      // several selections without carrying every group at once; dimming is
+      // what keeps its width from jumping as the caret moves. Neither is
+      // universally right, so neither is decided here.
+      control.classList.toggle('gone', !available && spec.unavailable === 'hide')
       if (spec.kind === 'field' || spec.kind === 'select') {
         const shown = String(spec.value?.(this.view.state) ?? '')
         this.#shown.set(spec.id, shown)
@@ -285,6 +332,28 @@ export class PmToolbar extends HTMLElement {
         control.setAttribute('aria-pressed', String(spec.active?.(this.view.state) ?? false))
       }
     }
+    this.#trimSeparators()
+  }
+
+  // A separator divides two sections; with hiding in play a whole section can
+  // vanish and leave its rule behind, so the strip opens with a stack of
+  // orphaned lines. Which separators still divide anything is the element's own
+  // business — it is the only thing that knows what is currently drawn — unlike
+  // *what to hide*, which is the host's.
+  #trimSeparators() {
+    let lastKept: Element | null = null
+    let sinceKept = 0
+    for (const el of this.#shadow.children) {
+      if (el.classList.contains('separator')) {
+        if (sinceKept === 0) el.classList.add('gone')
+        else {
+          el.classList.remove('gone')
+          lastKept = el
+          sinceKept = 0
+        }
+      } else if (!el.classList.contains('gone')) sinceKept++
+    }
+    if (lastKept && sinceKept === 0) lastKept.classList.add('gone')
   }
 }
 

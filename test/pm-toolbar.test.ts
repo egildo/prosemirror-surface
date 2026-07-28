@@ -190,6 +190,41 @@ describe('<pm-toolbar> — fields and selects', () => {
     expect(toolbar.hidden).toBe(true)
   })
 
+  it('hides what the dry run refuses, when the host asked for hiding', () => {
+    const toolbar = makeToolbar(
+      [
+        { id: 'a', label: 'A', command: () => true, unavailable: 'hide' },
+        { id: 'b', label: 'B', command: () => false, unavailable: 'hide' },
+        { id: 'c', label: 'C', command: () => false },
+      ],
+      at,
+    )
+    toolbar.sync()
+    const gone = (id: string) => toolbar.shadowRoot!.querySelector(`[data-id='${id}']`)!.classList.contains('gone')
+    expect([gone('a'), gone('b'), gone('c')]).toEqual([false, true, false])
+    // 'c' asked for nothing, so it dims the way it always did.
+    expect((toolbar.shadowRoot!.querySelector("[data-id='c']") as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('a separator that no longer divides anything goes with its section', () => {
+    const toolbar = makeToolbar(
+      [
+        { id: 'a', label: 'A', command: () => false, unavailable: 'hide' },
+        { separator: true },
+        { id: 'b', label: 'B', command: () => true, unavailable: 'hide' },
+        { separator: true },
+        { id: 'c', label: 'C', command: () => false, unavailable: 'hide' },
+      ],
+      at,
+    )
+    toolbar.sync()
+    const rules = [...toolbar.shadowRoot!.querySelectorAll('.separator')]
+    // 'a' hid, so the leading rule divides nothing; 'c' hid, so the trailing
+    // one is orphaned too. A strip that opened with a stack of loose lines was
+    // the visible form of this.
+    expect(rules.map((rule) => rule.classList.contains('gone'))).toEqual([true, true])
+  })
+
   it('draws a select with a blank standing for "no member here"', () => {
     let member: string | null = 'body'
     const toolbar = makeToolbar(
