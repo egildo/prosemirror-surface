@@ -4,11 +4,11 @@
 // `state` is an opaque token it passes back to the functions it was given.
 
 import { describe, it, expect, vi } from 'vitest'
-import { PmToolbar, selectionAnchor, type ToolbarItem } from '../src/index.js'
+import { PmToolbar, place, selectionAnchor, type Rect, type ToolbarItem } from '../src/index.js'
 
 const STATE = { token: true }
 
-function makeToolbar(specs: ToolbarItem[], anchor: (view: any) => { top: number; left: number } | null) {
+function makeToolbar(specs: ToolbarItem[], anchor: (view: any) => Rect | null) {
   const toolbar = document.createElement('pm-toolbar') as PmToolbar
   document.body.append(toolbar)
   toolbar.view = { state: STATE, dispatch: vi.fn() }
@@ -43,16 +43,64 @@ describe('<pm-toolbar>', () => {
     expect(shadow.querySelector('button')!.title).toBe('Verb A')
   })
 
-  it('hides when the anchor answers null, floats where it points otherwise', () => {
-    let at: { top: number; left: number } | null = null
+  it('hides when the anchor answers null, and places itself against the rect otherwise', () => {
+    let at: Rect | null = null
     const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => at)
+    // A headless DOM measures every box as zero, so the element is given a real
+    // one: placement is a function of the size it *measures*, and a test that
+    // lets it measure nothing is testing nothing.
+    toolbar.getBoundingClientRect = () => ({ width: 200, height: 30 }) as DOMRect
     toolbar.sync()
     expect(toolbar.hidden).toBe(true)
-    at = { top: 40, left: 80 }
+
+    // A selection near the top-left corner. There is no room above for a 30px
+    // strip, and centring a 200px one on x=80 would hang half of it off-screen.
+    // Both of those used to happen; now it flips and it clamps.
+    at = { top: 40, left: 80, bottom: 56, right: 80 }
     toolbar.sync()
     expect(toolbar.hidden).toBe(false)
-    expect(toolbar.style.top).toBe('40px')
-    expect(toolbar.style.left).toBe('80px')
+    expect(toolbar.dataset.side).toBe('below')
+    expect(toolbar.style.top).toBe('64px') // anchor.bottom + gap
+    expect(toolbar.style.left).toBe('8px') // pulled back to the viewport margin
+  })
+
+  it('re-places itself on scroll and resize, and stops when it leaves the document', () => {
+    // A strip pinned in viewport coordinates detaches from what it serves the
+    // moment the page scrolls, and no transaction fires to tell it. Scrolling
+    // and resizing are the two things that change the answer without changing
+    // the state.
+    //
+    // What this pins is the *wiring* — listener attached, guard right, removed
+    // on disconnect. That the browser emits these events on a real user scroll
+    // is the platform's business, and it could not be checked from here: in the
+    // harness this was verified through, a genuine programmatic scroll fires no
+    // scroll event on window, document or the scrolling element. The placement
+    // itself was verified live instead (above → below at the viewport's top).
+    let at: Rect | null = { top: 300, left: 400, bottom: 316, right: 500 }
+    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => at)
+    toolbar.getBoundingClientRect = () => ({ width: 200, height: 30 }) as DOMRect
+    toolbar.sync()
+    const syncs = vi.spyOn(toolbar, 'sync')
+
+    window.dispatchEvent(new Event('scroll'))
+    window.dispatchEvent(new Event('resize'))
+    expect(syncs).toHaveBeenCalledTimes(2)
+
+    // Nothing to re-place while hidden — a scroll must not resurrect a strip
+    // the anchor already dismissed.
+    at = null
+    toolbar.sync()
+    syncs.mockClear()
+    window.dispatchEvent(new Event('scroll'))
+    expect(syncs).not.toHaveBeenCalled()
+
+    // And an element the host removed stops listening to the world.
+    at = { top: 300, left: 400, bottom: 316, right: 500 }
+    toolbar.sync()
+    toolbar.remove()
+    syncs.mockClear()
+    window.dispatchEvent(new Event('scroll'))
+    expect(syncs).not.toHaveBeenCalled()
   })
 
   it('dry-runs for enabled-ness and reads active for lit-ness, with the opaque state', () => {
@@ -268,12 +316,65 @@ describe('selectionAnchor', () => {
       ...over,
     }) as any
 
-  it('floats at the top-centre of the selection', () => {
-    expect(selectionAnchor(view({}))).toEqual({ top: 10, left: (10 + 58) / 2 })
+  it('answers the rect the selection occupies, not a point', () => {
+    // Both edges, because placement needs both: the top to sit above, the
+    // bottom to flip below when there is no room. A multi-line selection's
+    // rect is the union of its ends — the strip belongs over the selection,
+    // not over its last line.
+    expect(selectionAnchor(view({}))).toEqual({ top: 10, bottom: 62, left: 10, right: 58 })
   })
 
   it('answers null for an empty selection or an unfocused editor', () => {
     expect(selectionAnchor(view({ state: { selection: { from: 1, to: 1, empty: true } } }))).toBeNull()
     expect(selectionAnchor(view({ hasFocus: () => false }))).toBeNull()
+  })
+})
+
+describe('place — the geometry, alone', () => {
+  const size = { width: 200, height: 30 }
+  const viewport = { width: 1000, height: 600 }
+  const at = (rect: Rect) => place(rect, size, { viewport })
+
+  it('sits above and centred when there is room', () => {
+    // Chrome that covers what you just selected is chrome you have to move.
+    expect(at({ top: 300, bottom: 316, left: 400, right: 600 })).toEqual({
+      top: 300 - 30 - 8,
+      left: 500 - 100,
+      side: 'above',
+    })
+  })
+
+  it('flips below when there is no room above', () => {
+    const spot = at({ top: 20, bottom: 36, left: 400, right: 600 })
+    expect(spot.side).toBe('below')
+    expect(spot.top).toBe(36 + 8)
+  })
+
+  it('pulls itself back inside the viewport at either edge', () => {
+    // The bug this replaces: a selection near the left margin put half the
+    // strip off-screen, first buttons unreachable.
+    expect(at({ top: 300, bottom: 316, left: 5, right: 20 }).left).toBe(8)
+    expect(at({ top: 300, bottom: 316, left: 980, right: 995 }).left).toBe(1000 - 200 - 8)
+  })
+
+  it('takes the roomier side when neither fits, rather than hanging off one', () => {
+    const tall = { width: 200, height: 500 }
+    // 40px above, 44px below in a 600px viewport: below wins, and the result is
+    // clamped rather than being allowed to run past the edge.
+    const spot = place({ top: 40, bottom: 556, left: 400, right: 600 }, tall, { viewport })
+    expect(spot.side).toBe('below')
+    expect(spot.top).toBe(600 - 500 - 8)
+  })
+
+  it('treats a point anchor as a zero-size rect, so an older anchor still works', () => {
+    expect(place({ top: 300, left: 500 }, size, { viewport })).toEqual({
+      top: 300 - 30 - 8,
+      left: 500 - 100,
+      side: 'above',
+    })
+  })
+
+  it('prefers the near edge when the thing is wider than the room it has', () => {
+    expect(place({ top: 300, left: 500 }, { width: 5000, height: 30 }, { viewport }).left).toBe(8)
   })
 })

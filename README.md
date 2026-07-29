@@ -8,7 +8,28 @@ The doctrine it implements comes from [prosemirror-verbs](https://github.com/egi
 
 - **`<pm-toolbar>`** — a floating command bar that knows nothing about the editor it serves. It is handed an opaque `view` (only `.state`, `.dispatch` and `.focus()` are ever touched), a list of `specs`, and an `anchor` function; it renders **buttons, fields and selects**, dry-runs commands for enabled-ness, reads `active` for lit-ness and `value` for what a control shows. Importing the package registers the element, guarded against double registration.
 - **`toolbarPlugin(element, specs, anchor)`** — the lane: a ProseMirror plugin whose PluginView wires the element and calls `element.sync()` on every state change. It touches only `.specs`, `.anchor`, `.view`, `.hidden` and `.sync()` — it neither knows nor cares that the thing it drives is a custom element.
-- **`selectionAnchor(view)`** — where the strip floats: top-centre of the selection, or `null` (hidden) when the selection is empty or the editor unfocused. Write your own for other geometries; returning `null` is the whole show/hide rule.
+- **`selectionAnchor(view)`** — **what** the strip floats near: the rect the selection occupies, or `null` (hidden) when the selection is empty or the editor unfocused. Write your own for other geometries; returning `null` is the whole show/hide rule.
+- **`place(anchor, size, options)`** — **where** it goes: pure geometry, no DOM, no editor.
+
+## Anchoring and placement
+
+Two jobs, deliberately separate — the same split this ecosystem draws everywhere else. The **anchor** says *what I am about*; the **element** says *where I go*.
+
+```js
+anchor: (view) => ({ top, left, bottom?, right? }) | null
+```
+
+A **rect**, because a point cannot be flipped: choosing the other side needs the far edge of the thing you are avoiding, and staying on screen needs your own width. `bottom` and `right` default to `top` and `left` — a zero-size rect — so an anchor written against the older point contract keeps working and simply gains the clamping.
+
+The element measures itself, calls `place()`, and writes real `top`/`left`. Above by default (chrome that covers what you just selected is chrome you have to move), flipped below when there is no room above, and pulled back inside the viewport at either edge — which is the bug this replaces: a selection near the left margin used to put half the strip off-screen with its first buttons unreachable.
+
+There is **no CSS transform** any more. `translate(-50%, -100%)` used to do the centring and the lift, and that was precisely why the strip could not be kept on screen: a transform is applied after layout, so the coordinates JS writes are not the box's real corner, and clamping them clamps the wrong number.
+
+The result rides out as `data-side="above|below"` for stylesheets that care — a pointer arrow has to swap ends. The strip also re-places itself on **scroll** and **resize**, the two things that change the answer without changing the editor's state, so no transaction fires to say so.
+
+`place()` is exported and tested on its own, which is the point of its being a function rather than a method: geometry written inside an element is geometry nobody can check.
+
+*On the platform's own answer: CSS anchor positioning — `anchor-name`, `position-area`, `position-try-fallbacks: flip-block, flip-inline` — is this file in a declaration, and it is where this should end up. It is not evenly shipped across engines yet, and a surface that works in one engine is not a surface. When it is, `place()` becomes the fallback rather than the mechanism, and the contract above does not change.*
 
 ## The spec contract
 

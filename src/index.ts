@@ -12,3 +12,5 @@ export type { ToolbarSpec, ToolbarItem, ToolbarCommand, ToolbarAnchor } from './
 export { toolbarPlugin } from './plugin.js'
 export type { ToolbarLike } from './plugin.js'
 export { selectionAnchor } from './anchor.js'
+export { place } from './place.js'
+export type { Rect, Size, Placement, PlaceOptions } from './place.js'

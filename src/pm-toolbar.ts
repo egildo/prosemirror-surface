@@ -12,6 +12,9 @@
 // know" — a spec produced by prosemirror-verbs' toolbarSpecs fits structurally,
 // and so does anything else of this shape. No package joins these two; a shape does.
 
+import { place } from './place.js'
+import type { Rect } from './place.js'
+
 /** A command as this element understands it: opaque, dry-runnable. */
 export type ToolbarCommand = (state: any, dispatch?: any, view?: any) => boolean
 
@@ -41,8 +44,12 @@ export interface ToolbarSpec {
 }
 export type ToolbarItem = ToolbarSpec | { separator: true }
 
-/** Where to float, or null for "nothing to show". */
-export type ToolbarAnchor = (view: any) => { top: number; left: number } | null
+/** What to float near, or null for "nothing to show".
+ *
+ *  A **rect** in viewport coordinates. A point still works — `bottom` and
+ *  `right` default to `top` and `left`, a zero-size rect — so an anchor written
+ *  against the older contract keeps working and simply gains the clamping. */
+export type ToolbarAnchor = (view: any) => Rect | null
 
 const sheet = new CSSStyleSheet()
 sheet.replaceSync(`
@@ -62,8 +69,11 @@ sheet.replaceSync(`
     background: Canvas;
     border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
     box-shadow: 0 4px 14px rgb(0 0 0 / 0.28);
-    /* The host is placed at the top-centre of the target; CSS lifts it clear. */
-    transform: translate(-50%, calc(-100% - 8px));
+    /* No transform. A translate(-50%, -100%) used to do the centring and the
+       lift, and it is exactly why the strip could not be kept on screen: a
+       transform is applied after layout, so the top/left JS writes are not the
+       box's real corner, and clamping them clamps the wrong number. Both
+       coordinates are now computed honestly, in place.ts. */
   }
 
   /* [hidden] is display:none in the UA sheet, which :host's display would win against. */
@@ -191,6 +201,13 @@ export class PmToolbar extends HTMLElement {
   // HTMLUnknownElement instead of propagating. Hiding starts here.
   connectedCallback() {
     this.hidden = true
+    addEventListener('scroll', this.#follow, { capture: true, passive: true })
+    addEventListener('resize', this.#follow, { passive: true })
+  }
+
+  disconnectedCallback() {
+    removeEventListener('scroll', this.#follow, { capture: true })
+    removeEventListener('resize', this.#follow)
   }
 
   set specs(value: ToolbarItem[] | null | undefined) {
@@ -306,10 +323,7 @@ export class PmToolbar extends HTMLElement {
       this.hidden = false
       // A docked bar takes its position from the document, not from us; the
       // anchor's answer still decides whether it is there at all.
-      if (this.placement === 'anchored') {
-        this.style.top = `${at.top}px`
-        this.style.left = `${at.left}px`
-      }
+      if (this.placement === 'anchored') this.#position(at)
     }
 
     for (const spec of this.#specs) {
@@ -333,6 +347,33 @@ export class PmToolbar extends HTMLElement {
       }
     }
     this.#trimSeparators()
+  }
+
+  // Measure, then decide, then apply. The measuring has to happen while the
+  // element is visible — a hidden box has no size — which is why `sync` unhides
+  // first; there is no flash, because layout is computed synchronously here and
+  // paint happens after this task.
+  //
+  // `side` rides out as an attribute rather than being consumed here: which
+  // way a strip ended up flipping is exactly the sort of thing a stylesheet
+  // wants (a pointer arrow that must swap ends), and it is not this element's
+  // business to draw one.
+  #position(at: Rect) {
+    const box = this.getBoundingClientRect()
+    const spot = place(at, { width: box.width, height: box.height })
+    this.style.top = `${spot.top}px`
+    this.style.left = `${spot.left}px`
+    this.dataset.side = spot.side
+  }
+
+  // A strip pinned in viewport coordinates does not move when the page scrolls,
+  // and no transaction fires to tell it to — so it detaches from the selection
+  // it serves and hangs in mid-air. Scrolling and resizing are the two things
+  // that change the answer without changing the state, so they are the two
+  // things this listens to. Capture, because scroll does not bubble from an
+  // inner scroller.
+  #follow = () => {
+    if (this.view && !this.hidden) this.sync()
   }
 
   // A separator divides two sections; with hiding in play a whole section can

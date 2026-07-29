@@ -9,6 +9,7 @@
 // means nothing to show.
 
 import type { EditorView } from 'prosemirror-view'
+import type { Rect } from './place.js'
 
 // "The editor has focus" must include focus held *inside* the editor's DOM
 // by a node view's own components (a plugin's cell, say — focusable internal
@@ -21,10 +22,25 @@ function focusWithin(view: EditorView): boolean {
   return !!active && view.dom.contains(active)
 }
 
-export function selectionAnchor(view: EditorView): { top: number; left: number } | null {
+/// The rect the selection occupies, or null for "nothing to show".
+///
+/// A **rect**, not a point: the element places itself relative to this, and
+/// placement needs both edges — the top to sit above, the bottom to flip below
+/// when there is no room above. Answering a point was the reason the strip
+/// could not flip and could not be pulled back inside the viewport.
+///
+/// A multi-line selection's rect is the union of its ends, which is wider than
+/// the text on any one line. That is the right answer for centring: the strip
+/// belongs over the *selection*, not over its last line.
+export function selectionAnchor(view: EditorView): Rect | null {
   const { from, to, empty } = view.state.selection
   if (empty || !focusWithin(view)) return null
   const start = view.coordsAtPos(from)
   const end = view.coordsAtPos(to)
-  return { top: Math.min(start.top, end.top), left: (start.left + end.right) / 2 }
+  return {
+    top: Math.min(start.top, end.top),
+    bottom: Math.max(start.bottom, end.bottom),
+    left: Math.min(start.left, end.left),
+    right: Math.max(start.right, end.right),
+  }
 }
