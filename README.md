@@ -31,6 +31,54 @@ The result rides out as `data-side="above|below"` for stylesheets that care — 
 
 *On the platform's own answer: CSS anchor positioning — `anchor-name`, `position-area`, `position-try-fallbacks: flip-block, flip-inline` — is this file in a declaration, and it is where this should end up. It is not evenly shipped across engines yet, and a surface that works in one engine is not a surface. When it is, `place()` becomes the fallback rather than the mechanism, and the contract above does not change.*
 
+## Templates: your markup, our behaviour
+
+The element draws a built-in for each `as` it knows. Supply a `<template data-as="…">` as a **light-DOM child** and it draws yours instead:
+
+```html
+<pm-toolbar>
+  <template data-as="button">
+    <button type="button" class="ctl"><i data-slot="icon"></i></button>
+  </template>
+  <template data-as="menu">
+    <span class="grp">
+      <button type="button" class="face" data-slot="face"><i data-slot="icon"></i></button>
+      <div popover data-slot="items"></div>
+    </span>
+  </template>
+</pm-toolbar>
+```
+
+> **The template owns structure and appearance. The element owns behaviour and state.**
+
+That line is what keeps this from being a framework. The element still runs the dry run that disables, reads the readback that lights or fills, dispatches on click and commits through `write`. A template that could change *behaviour* would be a framework; one that can only change shape is a stylesheet with elements in it.
+
+- **Keyed by `as`, never by id.** One template per drawing, applied to every control of that drawing, is consistent by construction — a per-control override would drift the first time somebody was in a hurry.
+- **Four holes**: `icon`, `label`, `face`, `items`. A fifth has to earn its place, because this is where a template language would start. No conditionals, no loops, no expressions — a template that needs to *decide* something is describing a decision that belongs in the host's cascade, where `describe()` can explain it.
+- **Templates render into light DOM; defaults render into shadow.** Supply none and the strip is fully encapsulated; supply any and you have opted into owning the appearance, so your markup lands in your own cascade and your stylesheet reaches it with no `::part` ceremony. (The whole rendering moves, not just the templated parts — so once you template anything, style everything.)
+- **An unknown `as` falls back** to the kind's default. A typo costs a switch, never a control.
+
+### Sections, and menus for free
+
+A section arrives as `{ group, label, as?, icon?, items }` and is drawn `inline` (children as siblings, via `display: contents`, which is today's strip) or as a `menu` — one face plus a `popover`. Open, close, light dismiss, the top layer and Escape are the platform's; **this element writes no open/close code at all**, only `popovertarget`.
+
+One thing the platform does not yet do for us: a popover is painted in the top layer, so `position: absolute` will not anchor it to the button that opened it. CSS anchor positioning is the native answer and is not evenly shipped, so the panel is placed with the same `place()` the strip uses, preferring `below`.
+
+A section with nothing available in it disappears, and so does the divider that no longer divides anything — separator-trimming, one altitude up.
+
+### Icons are names
+
+The element **never resolves an icon**. It writes the name onto the template's icon hole as `data-icon` and stops:
+
+```css
+[data-icon] { mask: center / contain no-repeat; background: currentColor }
+[data-icon="row-add-after"] { mask-image: url(icons/row-add-after.svg) }
+```
+
+An icon font, an SVG symbol, a letter in `content:` — all the same to this package. `mask` plus `currentColor` gets you hover, disabled and dark mode for free.
+
+**Consequence worth knowing**: an icon-only control has no text node, so the accessible name is the only name there is. The element writes `aria-label` from `title` for exactly that reason, and it is pinned in the tests.
+
 ## The spec contract
 
 The element eats a **structural shape**, not a package:

@@ -47,6 +47,11 @@ export interface PlaceOptions {
   gap?: number
   margin?: number
   viewport?: Size
+  /** Which side to try first. A strip over a selection wants `above` — chrome
+   *  covering what you just selected is chrome you have to move. A menu hanging
+   *  off its own button wants `below`, which is where everyone has looked for a
+   *  dropdown since 1984. Either flips when its side has no room. */
+  prefer?: 'above' | 'below'
 }
 
 // Clamp, with the honest degenerate case: when the thing is wider than the
@@ -80,10 +85,13 @@ export function place(anchor: Rect, size: Size, options: PlaceOptions = {}): Pla
   const roomAbove = anchor.top - margin
   const roomBelow = viewport.height - bottom - margin
   const needed = size.height + gap
-  // Above unless it does not fit and below does; if neither fits, take the
-  // larger side rather than picking one on principle and hanging off it.
+  // The preferred side unless it does not fit and the other does; if neither
+  // fits, the larger, rather than picking one on principle and hanging off it.
+  const first = options.prefer ?? 'above'
+  const room = first === 'above' ? roomAbove : roomBelow
+  const other = first === 'above' ? roomBelow : roomAbove
   const side: Placement['side'] =
-    roomAbove >= needed || (roomBelow < needed && roomAbove >= roomBelow) ? 'above' : 'below'
+    room >= needed || (other < needed && room >= other) ? first : first === 'above' ? 'below' : 'above'
 
   const top =
     side === 'above'

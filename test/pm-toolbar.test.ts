@@ -4,7 +4,7 @@
 // `state` is an opaque token it passes back to the functions it was given.
 
 import { describe, it, expect, vi } from 'vitest'
-import { PmToolbar, place, selectionAnchor, type Rect, type ToolbarItem } from '../src/index.js'
+import { PmToolbar, place, selectionAnchor, type Rect, type ToolbarItem, type ToolbarSpec } from '../src/index.js'
 
 const STATE = { token: true }
 
@@ -121,11 +121,148 @@ describe('<pm-toolbar>', () => {
     expect(command).toHaveBeenCalledWith(STATE, toolbar.view.dispatch, toolbar.view)
   })
 
-  it('never takes focus: mousedown in the shadow is prevented', () => {
+  it('never takes focus: a mousedown on a button is prevented', () => {
     const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => null)
-    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    // `composed` because the guard sits on the host now, not the shadow root —
+    // controls may be drawn into either, and a real mousedown is always
+    // composed. The target is read from `composedPath()[0]`, since a listener
+    // on the host would otherwise see everything retargeted to the host itself.
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, composed: true })
     toolbar.shadowRoot!.querySelector('button')!.dispatchEvent(event)
     expect(event.defaultPrevented).toBe(true)
+  })
+})
+
+describe('<pm-toolbar> — sections', () => {
+  const at = () => ({ top: 300, left: 400, bottom: 316, right: 500 })
+  const button = (id: string, over: Partial<ToolbarSpec> = {}): ToolbarSpec => ({
+    id,
+    label: id,
+    command: () => true,
+    ...over,
+  })
+
+  it('draws an inline section as siblings, and separates two of them', () => {
+    const toolbar = makeToolbar(
+      [
+        { group: 'marks', label: 'Format', items: [button('strong'), button('em')] },
+        { group: 'history', label: 'History', items: [button('undo')] },
+      ],
+      at,
+    )
+    const shadow = toolbar.shadowRoot!
+    expect(shadow.querySelectorAll('button')).toHaveLength(3)
+    // `display: contents` keeps an inline section out of the layout, so the
+    // arrangement is what the flat strip always produced.
+    expect(shadow.querySelectorAll('.group[data-as="inline"]')).toHaveLength(2)
+    expect(shadow.querySelectorAll('.separator')).toHaveLength(1)
+  })
+
+  it('collapses a section behind a popover when it is drawn as a menu', () => {
+    const toolbar = makeToolbar(
+      [{ group: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
+      at,
+    )
+    const shadow = toolbar.shadowRoot!
+    const panel = shadow.querySelector('[popover]')!
+    const face = shadow.querySelector('.group[data-as="menu"] > button')!
+    expect(panel).toBeTruthy()
+    // The platform does open and close: the element writes the wiring and no
+    // more. There is no click handler anywhere for this.
+    expect(face.getAttribute('popovertarget')).toBe(panel.id)
+    expect(face.getAttribute('aria-label')).toBe('Table')
+    expect(panel.querySelectorAll('button')).toHaveLength(1)
+  })
+
+  it('takes a whole section away when nothing in it is available', () => {
+    let ok = true
+    const toolbar = makeToolbar(
+      [
+        {
+          group: 'table',
+          label: 'Table',
+          items: [button('table:insert', { command: () => ok, unavailable: 'hide' })],
+        },
+        { group: 'history', label: 'History', items: [button('undo')] },
+      ],
+      at,
+    )
+    toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
+    toolbar.sync()
+    const group = toolbar.shadowRoot!.querySelector('[data-group="table"]')!
+    expect(group.classList.contains('gone')).toBe(false)
+
+    ok = false
+    toolbar.sync()
+    // The section goes with its contents, and the divider that no longer
+    // divides anything goes too — separator-trimming, one altitude up.
+    expect(group.classList.contains('gone')).toBe(true)
+    expect(toolbar.shadowRoot!.querySelector('.separator')!.classList.contains('gone')).toBe(true)
+  })
+})
+
+describe('<pm-toolbar> — templates', () => {
+  const at = () => ({ top: 300, left: 400, bottom: 316, right: 500 })
+
+  function withTemplate(html: string, specs: ToolbarItem[]) {
+    const toolbar = document.createElement('pm-toolbar') as PmToolbar
+    document.body.append(toolbar)
+    toolbar.innerHTML = html
+    toolbar.view = { state: STATE, dispatch: vi.fn(), focus: vi.fn() }
+    toolbar.anchor = at
+    toolbar.specs = specs
+    return toolbar
+  }
+
+  it('uses a supplied template, fills its holes, and renders into light DOM', () => {
+    const command = vi.fn(() => true)
+    const toolbar = withTemplate(
+      `<template data-as="button">
+         <button type="button" class="mine"><i data-slot="icon"></i><span data-slot="label"></span></button>
+       </template>`,
+      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold', command }],
+    )
+    // Light DOM, so the venue's own stylesheet reaches it with no ::part.
+    const drawn = toolbar.querySelector('button.mine')!
+    expect(drawn).toBeTruthy()
+    expect(toolbar.shadowRoot!.querySelector('slot')).toBeTruthy()
+    expect(drawn.querySelector('[data-slot="label"]')!.textContent).toBe('Bold')
+    // The **name**, handed on untouched. What it draws is the stylesheet's business.
+    expect(drawn.querySelector('[data-slot="icon"]')!.getAttribute('data-icon')).toBe('bold')
+    // The template owns the shape; the element still owns the behaviour, which
+    // is the line that keeps this from being a framework.
+    ;(drawn as HTMLElement).click()
+    expect(command).toHaveBeenCalledWith(STATE, toolbar.view.dispatch, toolbar.view)
+  })
+
+  it('drops the icon hole when a control has no name for one', () => {
+    const toolbar = withTemplate(
+      `<template data-as="button"><button type="button"><i data-slot="icon"></i><span data-slot="label"></span></button></template>`,
+      [{ id: 'undo', label: 'Undo', command: () => true }],
+    )
+    expect(toolbar.querySelector('[data-slot="icon"]')).toBeNull()
+    expect(toolbar.querySelector('[data-slot="label"]')!.textContent).toBe('Undo')
+  })
+
+  it('falls back to the kind default for an `as` nobody taught it', () => {
+    // A typo costs a switch, never a control.
+    const toolbar = makeToolbar(
+      [{ id: 'strong', label: 'Bold', kind: 'toggle', as: 'swtich', command: () => true }],
+      at,
+    )
+    expect(toolbar.shadowRoot!.querySelectorAll('button')).toHaveLength(1)
+  })
+
+  it('gives an icon-only control a real accessible name', () => {
+    // With no text node there is no name at all unless one is written, so this
+    // is load-bearing rather than a nicety the way a tooltip was.
+    const toolbar = withTemplate(
+      `<template data-as="button"><button type="button"><i data-slot="icon"></i></button></template>`,
+      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold', command: () => true }],
+    )
+    const drawn = toolbar.querySelector('button')!
+    expect(drawn.textContent!.trim()).toBe('')
+    expect(drawn.getAttribute('aria-label')).toBe('Bold')
   })
 })
 
@@ -364,6 +501,16 @@ describe('place — the geometry, alone', () => {
     const spot = place({ top: 40, bottom: 556, left: 400, right: 600 }, tall, { viewport })
     expect(spot.side).toBe('below')
     expect(spot.top).toBe(600 - 500 - 8)
+  })
+
+  it('takes a preferred side, and still flips when that side has no room', () => {
+    // A strip over a selection wants above; a menu hanging off its own button
+    // wants below. One rule, told which way to lean.
+    const below = place({ top: 300, bottom: 316, left: 400, right: 600 }, size, { viewport, prefer: 'below' })
+    expect(below).toEqual({ top: 316 + 8, left: 500 - 100, side: 'below' })
+    // No room below: it goes above, exactly as the default does in reverse.
+    const cramped = place({ top: 550, bottom: 580, left: 400, right: 600 }, size, { viewport, prefer: 'below' })
+    expect(cramped.side).toBe('above')
   })
 
   it('treats a point anchor as a zero-size rect, so an older anchor still works', () => {
