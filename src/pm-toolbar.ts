@@ -74,8 +74,27 @@ export type ToolbarItem = ToolbarSpec | ToolbarGroup | { separator: true }
 const isGroup = (item: ToolbarItem): item is ToolbarGroup => 'items' in item
 const isSeparator = (item: ToolbarItem): item is { separator: true } => 'separator' in item
 
-// What each kind is drawn as when nobody said. The projection defaults `as`
-// already; this is the element's own floor for a spec that arrived without one.
+// ── The two vocabularies, and why only one of them is closed ─────────────────
+//
+// **`as` is open.** Any word a venue writes arrives here untouched — the
+// projection passes it through and validates nothing — because `as` says how a
+// control *looks*, and appearance is the host's. The words below are this
+// element's **floor**: what to draw when no template matched, so a venue that
+// supplies none still gets a working strip. They are not a permitted list, and
+// an unknown word costs a drawing, never a control.
+//
+// **`kind` is closed**, because behaviour follows from it: an action runs, a
+// value commits what it holds, a choice commits one of its members. That is
+// deduced from the declaration's shape and nobody may disagree with it (V15).
+//
+// Which is why the wiring below is chosen from the **kind** and from the
+// element the template actually handed us — never from the word. It used to be
+// chosen from the word, and so a choice drawn as anything but a `<select>` got
+// select wiring on a button: `<option>`s appended into it, a `change` listener
+// that could never fire, and no error anywhere. The open vocabulary was only
+// half true, and this is the half that was missing.
+
+// What each kind is drawn as when nobody said.
 const DEFAULT_AS: Record<string, string> = {
   action: 'button',
   toggle: 'button',
@@ -87,14 +106,35 @@ const DEFAULT_AS: Record<string, string> = {
   field: 'field',
 }
 
-// Which built-in draws a given `as`. A word with no entry here falls back to
-// the kind's default rather than rendering nothing.
-const BUILT_IN: Record<string, 'button' | 'select' | 'field'> = {
+/** How a control behaves: what it does when you use it, and what it shows back. */
+type Wiring = 'pressable' | 'picker' | 'field' | 'dropdown'
+
+// Which built-in *drawing* a given `as` asks for. Consulted only when no
+// template matched — it decides what markup to create, not how to wire it.
+const BUILT_IN: Record<string, 'button' | 'select' | 'field' | 'dropdown'> = {
   button: 'button',
   switch: 'button',
   select: 'select',
   radio: 'select',
   field: 'field',
+  dropdown: 'dropdown',
+}
+
+// The wiring, from the kind and the element we landed on. The element gets a
+// say because a template is the one thing that can hand us a real `<select>` or
+// a real `<input>`, and those carry their own behaviour that it would be rude
+// to ignore. Everything else is pressable, which is the only wiring that works
+// on an arbitrary element.
+function wiringFor(spec: ToolbarSpec, control: HTMLElement, drawn: string): Wiring {
+  const tag = control.tagName
+  if (tag === 'SELECT') return 'picker'
+  if (tag === 'INPUT') return 'field'
+  // A choice that is not a `<select>` is a face plus one member per option.
+  if (spec.kind === 'choice' || drawn === 'dropdown') return 'dropdown'
+  // Anything else is pressable — including a `value` verb a venue chose to draw
+  // as a button, which is not a mistake: that spec's command is the collecting
+  // one, so the button asks for the value the way a chord would.
+  return 'pressable'
 }
 
 let popoverSeq = 0
@@ -217,7 +257,18 @@ sheet.replaceSync(`
      children into the strip's own flex line, so nesting costs no layout. */
   .group[data-as='inline'] { display: contents; }
 
-  .group[data-as='menu'] { position: relative; display: inline-flex; }
+  /* A section collapsed behind its face, and a choice collapsed behind its
+     current member. Two altitudes, one shape — which is why they share a rule
+     and share the popover wiring underneath it. */
+  .group[data-as='menu'], .group[data-as='dropdown'] { position: relative; display: inline-flex; }
+
+  /* A dropdown's panel is a column: its members are alternatives to read down,
+     not a row of tools to scan across. */
+  .group[data-as='dropdown'] > [popover]:popover-open {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
 
   /* The collapsed section's own sheet. The popover attribute does the work —
      top layer, light dismiss, focus handling — so there is no open/close code
@@ -227,8 +278,6 @@ sheet.replaceSync(`
     inset: auto;
     margin: 0;
     padding: 4px;
-    display: flex;
-    flex-wrap: wrap;
     gap: 2px;
     /* Shrink-to-fit measures against the containing block — a strip as wide as
        its own face — so without this the panel folds into a single column. */
@@ -240,17 +289,33 @@ sheet.replaceSync(`
     color: CanvasText;
     box-shadow: 0 4px 14px rgb(0 0 0 / 0.28);
   }
-  [popover]:popover-open { position: fixed; }
+  /* **Only when open.** The UA hides a closed popover with \`display: none\`, and
+     an author rule saying \`display: flex\` on the panel itself beats it — every
+     author rule beats every UA rule, whatever the specificity. So a "collapsed"
+     section sat open forever, and the strip carried a panel nobody had asked
+     for. Say the display here, where being open is the condition. */
+  [popover]:popover-open { position: fixed; display: flex; flex-wrap: wrap; }
 `)
 
 const isControl = (node: EventTarget | null): boolean =>
   node instanceof HTMLElement && (node.tagName === 'INPUT' || node.tagName === 'SELECT')
 
-/** One drawn control: the box that hides, and the thing that takes the click. */
+/** One drawn control: the box that hides, and the thing that takes the click.
+ *
+ *  **The wrapper hides, the control disables.** When a template wraps its
+ *  control — `<li><button>` for a real `<ul>` — `root` is the `<li>` and
+ *  `control` the button, and that split is the contract: `.gone` lands on the
+ *  outer box so nothing of it is left in the layout, `disabled` on the thing a
+ *  pointer can reach. With no template the two are the same node and the
+ *  distinction costs nothing. */
 interface Drawn {
   root: HTMLElement
   control: HTMLElement
   spec: ToolbarSpec
+  /** A dropdown's panel of members, if it has one. */
+  panel?: HTMLElement | null
+  /** How it behaves — from its kind, never from its `as`. */
+  wiring?: Wiring
 }
 
 export class PmToolbar extends HTMLElement {
@@ -258,6 +323,14 @@ export class PmToolbar extends HTMLElement {
   #specs: ToolbarItem[] = []
   #controls = new Map<string, Drawn>()
   #groups: HTMLElement[] = []
+  // What each section drew *directly* into itself, in order. Kept rather than
+  // re-queried: with wrappers in play the DOM cannot answer "is anything of
+  // mine still showing" — a hidden `<li>` still contains a `<button>` that was
+  // never marked, and a nested panel's contents are not this section's business.
+  #members = new Map<HTMLElement, HTMLElement[]>()
+  // A drawn node → the wrapper a container's item template put it in. The
+  // wrapper is what hides, so this is where `sync` has to reach.
+  #wrapped = new WeakMap<HTMLElement, HTMLElement>()
   // Where the controls were drawn — the shadow root, or this element's own
   // light DOM when a venue supplied templates.
   #target: ParentNode
@@ -354,6 +427,7 @@ export class PmToolbar extends HTMLElement {
     const templates = this.#templates()
     this.#controls.clear()
     this.#groups = []
+    this.#members.clear()
     this.#shown.clear()
 
     if (templates.size) {
@@ -364,29 +438,88 @@ export class PmToolbar extends HTMLElement {
       this.#shadow.replaceChildren()
       this.#target = this.#shadow
     }
-    this.#draw(this.#specs, this.#target, templates)
+    this.#draw(this.#specs, this.#target, templates, this.#itemTemplate(this.#target))
   }
 
   // Walk the tree. A separator falls between two adjacent sections, which is
   // exactly where the flat projection used to put one — the arrangement is
   // unchanged, it is only no longer baked in before the element sees it.
-  #draw(items: ToolbarItem[], parent: ParentNode, templates: Map<string, HTMLTemplateElement>) {
+  //
+  // `wrap` is the container's own template for its children, if it declared one.
+  // A `<ul>` may only hold `<li>`, and that is the **container's** rule, not the
+  // item's opinion — so it is answered here, where the container is, rather than
+  // by every verb inside it separately claiming to be a list item.
+  #draw(
+    items: ToolbarItem[],
+    parent: ParentNode,
+    templates: Map<string, HTMLTemplateElement>,
+    wrap?: HTMLTemplateElement | null,
+  ) {
+    const drawn: HTMLElement[] = []
     let previousWasGroup = false
     for (const item of items) {
+      let node: HTMLElement
       if (isSeparator(item)) {
-        parent.append(this.#separator())
+        node = this.#separator()
         previousWasGroup = false
-        continue
-      }
-      if (isGroup(item)) {
-        if (previousWasGroup) parent.append(this.#separator())
-        parent.append(this.#group(item, templates))
+      } else if (isGroup(item)) {
+        if (previousWasGroup) parent.append(this.#wrap(wrap, this.#separator()))
+        node = this.#group(item, templates)
         previousWasGroup = true
-        continue
+      } else {
+        node = this.#control(item, templates)
+        previousWasGroup = false
       }
-      parent.append(this.#control(item, templates))
-      previousWasGroup = false
+      drawn.push(node)
+      parent.append(this.#wrap(wrap, node))
     }
+    return drawn
+  }
+
+  // Put a node inside a clone of the container's item template, or hand it back
+  // untouched. The wrapper is what carries `.gone`, so a hidden control takes
+  // its `<li>` with it rather than leaving an empty bullet behind.
+  #wrap(template: HTMLTemplateElement | null | undefined, node: HTMLElement): HTMLElement {
+    if (!template) return node
+    const box = template.content.firstElementChild?.cloneNode(true) as HTMLElement | undefined
+    if (!box) return node
+    box.append(node)
+    this.#wrapped.set(node, box)
+    return box
+  }
+
+  // The container's template for its own children, if it declared one. Scoped
+  // to `:scope >` so a nested section's template is that section's business.
+  #itemTemplate(hole: ParentNode): HTMLTemplateElement | null {
+    return hole.querySelector<HTMLTemplateElement>(':scope > template[data-slot="item"]')
+  }
+
+  // `popover` and `popovertarget` do all of it: top layer, light dismiss, focus
+  // handling, escape. No open/close code lives in this element — only the
+  // geometry, because the top layer paints outside the flow and so
+  // `position: absolute` cannot anchor a panel to the button that opened it.
+  // CSS anchor positioning is the platform's own answer and is not evenly
+  // shipped, so the same `place` the strip uses does the job, preferring below,
+  // because that is where everyone has looked for a dropdown since 1984.
+  #popover(button: HTMLElement, panel: HTMLElement) {
+    // A template may supply the panel; if it did not also say `popover`, then
+    // `popovertarget` would point at an ordinary element and the button would
+    // silently do nothing. Say it for them.
+    if (!panel.hasAttribute('popover')) panel.setAttribute('popover', '')
+    const id = panel.id || `pm-menu-${(popoverSeq += 1)}`
+    panel.id = id
+    button.setAttribute('popovertarget', id)
+    button.setAttribute('aria-haspopup', 'true')
+    button.setAttribute('aria-expanded', 'false')
+    panel.addEventListener('toggle', () => {
+      const open = panel.matches(':popover-open')
+      button.setAttribute('aria-expanded', String(open))
+      if (!open) return
+      const box = panel.getBoundingClientRect()
+      const spot = place(button.getBoundingClientRect(), { width: box.width, height: box.height }, { prefer: 'below' })
+      panel.style.top = `${spot.top}px`
+      panel.style.left = `${spot.left}px`
+    })
   }
 
   #separator(): HTMLElement {
@@ -408,44 +541,35 @@ export class PmToolbar extends HTMLElement {
     const face = root.querySelector<HTMLElement>('[data-slot="face"]')
     const hole = root.querySelector<HTMLElement>('[data-slot="items"]')
 
-    if (as === 'menu') {
-      // `popover` and `popovertarget` do all of it: top layer, light dismiss,
-      // focus handling, escape. No open/close code lives in this element.
+    // A section is collapsed when it *is* one, not when it is called one. With
+    // no template that means the word — `menu` is this element's own floor. With
+    // a template it means the markup: a panel the venue wrote `popover` on is a
+    // panel meant to open, whatever the venue chose to call the drawing. Which
+    // is what an open vocabulary has to mean at this altitude too — otherwise a
+    // second kind of section (a column of words beside a row of icons) would
+    // have to lie about its name to get the behaviour it plainly declared.
+    //
+    // Not the *face*: an inline section may want one, as a heading over a
+    // palette column, and a heading is not a thing you open.
+    if (as === 'menu' || hole?.hasAttribute('popover')) {
       const button = face ?? document.createElement('button')
       if (!face) {
         ;(button as HTMLButtonElement).type = 'button'
         root.append(button)
       }
       const panel = hole ?? document.createElement('div')
-      if (!hole) {
-        panel.setAttribute('popover', '')
-        root.append(panel)
-      }
-      const id = panel.id || `pm-menu-${(popoverSeq += 1)}`
-      panel.id = id
-      button.setAttribute('popovertarget', id)
-      // The top layer is why this needs help: a popover is painted outside the
-      // flow, so `position: absolute` does not anchor it to the button that
-      // opened it. CSS anchor positioning is the platform's own answer and is
-      // not evenly shipped, so the geometry we already own does the job — the
-      // same `place` the strip uses, preferring below, because that is where
-      // everyone has looked for a dropdown since 1984.
-      panel.addEventListener('toggle', () => {
-        if (!panel.matches(':popover-open')) return
-        const box = panel.getBoundingClientRect()
-        const spot = place(button.getBoundingClientRect(), { width: box.width, height: box.height }, { prefer: 'below' })
-        panel.style.top = `${spot.top}px`
-        panel.style.left = `${spot.left}px`
-      })
+      if (!hole) root.append(panel)
+      this.#popover(button, panel)
       this.#face(button, group)
-      this.#draw(group.items, panel, templates)
+      this.#members.set(root, this.#draw(group.items, panel, templates, this.#itemTemplate(panel)))
     } else {
       // An inline section is an arrangement, not a thing with a face. It gets
       // one only if a template asked for one (a heading over a palette column);
       // writing a label onto a bare section would put a stray text node in the
       // strip, ahead of the controls.
       if (face) this.#face(face, group)
-      this.#draw(group.items, hole ?? root, templates)
+      const into = hole ?? root
+      this.#members.set(root, this.#draw(group.items, into, templates, this.#itemTemplate(into)))
     }
 
     this.#groups.push(root)
@@ -482,28 +606,110 @@ export class PmToolbar extends HTMLElement {
     const as = spec.as ?? DEFAULT_AS[spec.kind ?? 'action'] ?? 'button'
     const template = templates.get(as)
     // An `as` this element has never heard of falls back to the kind's own
-    // default: a typo costs a switch, never a control.
+    // default *drawing*: a typo costs a switch, never a control.
     const built = BUILT_IN[as] ?? BUILT_IN[DEFAULT_AS[spec.kind ?? 'action'] ?? 'button'] ?? 'button'
 
     let root: HTMLElement
     let control: HTMLElement
+    let panel: HTMLElement | null = null
     if (template) {
       root = template.content.firstElementChild!.cloneNode(true) as HTMLElement
-      control = root.querySelector<HTMLElement>('button, input, select') ?? root
+      control = root.querySelector<HTMLElement>('[data-slot="face"], button, input, select') ?? root
+      panel = root.querySelector<HTMLElement>('[data-slot="items"]')
+    } else if (built === 'dropdown') {
+      ;({ root, control, panel } = this.#dropdown())
     } else {
       control = built === 'field' ? this.#input(spec) : built === 'select' ? this.#picker(spec) : this.#pressable(spec)
       root = control
     }
 
-    if (built === 'field') this.#wireField(control as HTMLInputElement, spec)
-    else if (built === 'select') this.#wirePicker(control as HTMLSelectElement, spec)
+    // From the kind and the element in hand — never from the word. See `wiringFor`.
+    const wiring = wiringFor(spec, control, built)
+    if (wiring === 'field') this.#wireField(control as HTMLInputElement, spec)
+    else if (wiring === 'picker') this.#wirePicker(control as HTMLSelectElement, spec)
+    else if (wiring === 'dropdown') this.#wireDropdown(control, panel, spec, templates)
     else this.#wirePressable(control, spec)
 
-    if (built !== 'field' && built !== 'select') this.#face(control, spec)
+    if (wiring !== 'field' && wiring !== 'picker') this.#face(control, spec)
+    // On both, when a template put them apart, so a stylesheet can reach either
+    // by id. Nothing *behavioural* reads these — `#collapse` used to, and got a
+    // hidden item's unmarked button for its trouble.
     root.dataset.id = spec.id
     control.dataset.id = spec.id
-    this.#controls.set(spec.id, { root, control, spec })
+    this.#controls.set(spec.id, { root, control, spec, panel, wiring })
     return root
+  }
+
+  // The built-in dropdown: a face and a panel, the same two parts a collapsed
+  // section has, because they are the same shape seen from one altitude down.
+  #dropdown(): { root: HTMLElement; control: HTMLElement; panel: HTMLElement } {
+    const root = document.createElement('span')
+    root.className = 'group'
+    root.dataset.as = 'dropdown'
+    const control = document.createElement('button')
+    control.type = 'button'
+    const panel = document.createElement('div')
+    panel.setAttribute('popover', '')
+    root.append(control, panel)
+    return { root, control, panel }
+  }
+
+  // A choice collapsed behind its current member. Everything it needs was
+  // already on the spec — `options` is the domain, `value` the readback, `write`
+  // the commit — which is why this is a drawing and not a feature: nothing new
+  // is declared, the same declaration is simply not flattened into a `<select>`.
+  #wireDropdown(
+    face: HTMLElement,
+    panel: HTMLElement | null,
+    spec: ToolbarSpec,
+    templates: Map<string, HTMLTemplateElement>,
+  ) {
+    if (!panel) {
+      // A template drew a choice with no items hole: it wants the face and
+      // nothing else. Honour it rather than inventing a panel it did not ask for.
+      this.#wirePressable(face, spec)
+      return
+    }
+    this.#popover(face, panel)
+    const item = this.#itemTemplate(panel)
+    for (const option of spec.options ?? []) {
+      const member = option as { value: string; label: string; icon?: string }
+      // A member is not a verb of its own — it is this verb, held to one value —
+      // so it is drawn as an ordinary control and wears the venue's own button
+      // template for free. Its id is keyed apart from `expand`'s `base:member`
+      // convention on purpose: a host drawing the base *and* its conjugated
+      // forms is a real arrangement, and these must not quietly overwrite those.
+      const drawn = this.#control(
+        {
+          id: `${spec.id}::${member.value}`,
+          label: member.label ?? member.value,
+          ...(member.icon ? { icon: member.icon } : {}),
+          kind: 'action',
+          // The platform's own word for a member of a chooser, and its own
+          // drawing: a row of words. Keyed apart from `button` so a venue can
+          // template a panel row without touching its strip's icon-only faces —
+          // and with no template at all, the built-in draws the label, which is
+          // what a chooser needs and what an icon-only face could never say.
+          as: 'option',
+          command: (state, dispatch) => {
+            // Available exactly when the verb is: the parent answers for its own
+            // members, and asking the same question twice invites two answers.
+            if (!dispatch) return spec.command(state)
+            this.#commit(spec, member.value)
+            // A chooser's panel has spent its purpose the moment you choose. (A
+            // section drawn as a menu stays open, deliberately — you may well
+            // want a second row after the first.)
+            panel.hidePopover?.()
+            return true
+          },
+          // Lit when it is the one the readback answers, so the panel shows
+          // where you are and not only where you may go.
+          active: (state) => String(spec.value?.(state) ?? '') === member.value,
+        },
+        templates,
+      )
+      panel.append(this.#wrap(item, drawn))
+    }
   }
 
   #pressable(_spec: ToolbarSpec): HTMLButtonElement {
@@ -603,15 +809,40 @@ export class PmToolbar extends HTMLElement {
     }
 
     const focused = this.#focused()
-    for (const { root, control, spec } of this.#controls.values()) {
+    for (const { root, control, spec, wiring } of this.#controls.values()) {
       const available = !!spec.command(this.view.state)
       ;(control as HTMLInputElement).disabled = !available
       // Dim or vanish, the host's call. Hiding is what lets one strip serve
       // several selections without carrying every group at once; dimming is
       // what keeps its width from jumping as the caret moves. Neither is
       // universally right, so neither is decided here.
-      root.classList.toggle('gone', !available && spec.unavailable === 'hide')
-      if (spec.write) {
+      //
+      // On the wrapper a container's item template put it in, when there is
+      // one — a hidden control must take its `<li>` with it, or the list keeps
+      // a bullet for something that is not there.
+      ;(this.#wrapped.get(root) ?? root).classList.toggle('gone', !available && spec.unavailable === 'hide')
+      if (wiring === 'dropdown') {
+        // The face wears the member the readback answers, and falls back to the
+        // verb's own name and picture when it answers none — which is the same
+        // honesty as the select's blank: a chooser showing a member it is not
+        // on would be lying.
+        const shown = String(spec.value?.(this.view.state) ?? '')
+        this.#shown.set(spec.id, shown)
+        const member = spec.options?.find((option) => option.value === shown) as
+          | { value: string; label?: string; icon?: string }
+          | undefined
+        // A domain member may carry only its value — a plugin naming its own
+        // members is taste, and plenty of them decline. Falling back to the
+        // value is what the select has always done; the face owes the same.
+        const named = member ? (member.label ?? member.value) : null
+        this.#face(control, {
+          label: named ?? spec.label,
+          icon: member?.icon ?? spec.icon,
+          // Both halves said aloud: what this chooses, and what it is on. An
+          // icon-only face has no text for a screen reader to fall back to.
+          title: named ? `${spec.title ?? spec.label}: ${named}` : (spec.title ?? spec.label),
+        })
+      } else if (spec.write) {
         const shown = String(spec.value?.(this.view.state) ?? '')
         this.#shown.set(spec.id, shown)
         // Never fight the typist: a focused control keeps what is in it.
@@ -630,9 +861,20 @@ export class PmToolbar extends HTMLElement {
   // holding nothing live goes with its contents — the generalisation of what
   // separator-trimming already did for a divider, now one altitude up — and
   // then the dividers that no longer divide anything follow.
+  // Asked of what each section drew, not of the DOM under it. Querying was
+  // right only while a control *was* its own box: once a template wraps one,
+  // `[data-id]:not(.gone)` finds the inner button of a hidden item — the button
+  // is never the thing marked — and a section of hidden items would stay open.
   #collapse() {
+    // `#groups` is already innermost-first — a section is recorded after the
+    // children it drew — so a section holding only empty sections goes too,
+    // in one pass. A separator is not a member: it divides, it is not content.
     for (const group of this.#groups) {
-      group.classList.toggle('gone', !group.querySelector('[data-id]:not(.gone)'))
+      const members = this.#members.get(group) ?? []
+      const showing = members.some(
+        (node) => !node.classList.contains('separator') && !(this.#wrapped.get(node) ?? node).classList.contains('gone'),
+      )
+      group.classList.toggle('gone', !showing)
     }
     this.#trimSeparators(this.#target)
     for (const group of this.#groups) this.#trimSeparators(group)

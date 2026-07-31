@@ -54,13 +54,45 @@ The element draws a built-in for each `as` it knows. Supply a `<template data-as
 That line is what keeps this from being a framework. The element still runs the dry run that disables, reads the readback that lights or fills, dispatches on click and commits through `write`. A template that could change *behaviour* would be a framework; one that can only change shape is a stylesheet with elements in it.
 
 - **Keyed by `as`, never by id.** One template per drawing, applied to every control of that drawing, is consistent by construction — a per-control override would drift the first time somebody was in a hurry.
-- **Four holes**: `icon`, `label`, `face`, `items`. A fifth has to earn its place, because this is where a template language would start. No conditionals, no loops, no expressions — a template that needs to *decide* something is describing a decision that belongs in the host's cascade, where `describe()` can explain it.
+- **Five holes**: `icon`, `label`, `face`, `items`, `item`. A sixth has to earn its place, because this is where a template language would start. No conditionals, no loops, no expressions — a template that needs to *decide* something is describing a decision that belongs in the host's cascade, where `describe()` can explain it.
 - **Templates render into light DOM; defaults render into shadow.** Supply none and the strip is fully encapsulated; supply any and you have opted into owning the appearance, so your markup lands in your own cascade and your stylesheet reaches it with no `::part` ceremony. (The whole rendering moves, not just the templated parts — so once you template anything, style everything.)
-- **An unknown `as` falls back** to the kind's default. A typo costs a switch, never a control.
+- **An unknown `as` falls back** to the kind's default *drawing*. A typo costs a switch, never a control.
+
+### What is yours, said plainly
+
+The elements are yours — all of them. A template's root element *is* the group, or *is* the control's box; the element only asks that a control's box contain something it can wire (`button`, `input`, `select`, or a `[data-slot="face"]`). So a section can be a real `<ul>`, a control a real `<li>`, and the semantics of your document outline stay your business — this package ships no opinion about which element or which ARIA role a piece of chrome should be.
+
+Two consequences worth writing down, because they are the contract and not an accident:
+
+- **The wrapper hides; the control disables.** When a template puts the control inside something, `.gone` lands on the outer box and `disabled` on the inner control. A hidden item takes its `<li>` with it, rather than leaving a bullet for something that is not there.
+- **The element reads the role you chose.** A `role="switch"` gets `aria-checked` where a button gets `aria-pressed`. It adapts to your markup; it does not overrule it.
+
+### The item hole: a container's rule about its own children
+
+A `<ul>` may hold only `<li>`. That is the **container's** rule, not the item's opinion — so it is answered where the container is, by a `<template data-slot="item">` nested in the items hole:
+
+```html
+<template data-as="listing">
+  <span class="grp">
+    <button type="button" data-slot="face"></button>
+    <ul popover data-slot="items">
+      <template data-slot="item"><li role="none"></li></template>
+    </ul>
+  </span>
+</template>
+```
+
+Every child drawn into that hole is wrapped in a clone. Without it the wrapper would have to ride on each verb's own `as`, and a verb's drawing would silently owe something to whichever section it happened to land in — the drift that keying by `as` exists to prevent.
 
 ### Sections, and menus for free
 
 A section arrives as `{ group, label, as?, icon?, items }` and is drawn `inline` (children as siblings, via `display: contents`, which is today's strip) or as a `menu` — one face plus a `popover`. Open, close, light dismiss, the top layer and Escape are the platform's; **this element writes no open/close code at all**, only `popovertarget`.
+
+A section is collapsed when it **is** one, not when it is called one: with no template that means the word `menu`, and with a template it means the markup — a panel you wrote `popover` on is a panel meant to open, whatever you called the drawing. So a venue may invent a second kind of section (a column of words beside a row of icons) without having to lie about its name. If your items hole forgets the `popover` attribute, the element adds it — `popovertarget` aimed at an ordinary element is silent, and silence is the worst failure a control can have.
+
+> **Styling a popover: put `display` on `:popover-open`, never on the panel itself.** The UA hides a closed popover with `display: none`, and *any* author rule setting `display` on the panel beats it — author beats UA whatever the specificity. A panel styled `display: flex` is therefore open forever. This element's own sheet had exactly that bug, and the venue's copy of it had the same; both now say `[popover]:popover-open { display: flex }`, and it is pinned by a test that reads the rules rather than the computed style, since a headless DOM has no UA popover styles to prove anything with.
+
+The element writes `aria-haspopup` and keeps `aria-expanded` true — the platform's popover does not — which means the one attribute a screen reader needs is also the one your stylesheet needs for a caret that turns over. A caret is appearance, so it belongs in your template as ordinary markup; no register should be asked to carry "this opens".
 
 One thing the platform does not yet do for us: a popover is painted in the top layer, so `position: absolute` will not anchor it to the button that opened it. CSS anchor positioning is the native answer and is not evenly shipped, so the panel is placed with the same `place()` the strip uses, preferring `below`.
 
@@ -84,11 +116,23 @@ An icon font, an SVG symbol, a letter in `content:` — all the same to this pac
 The element eats a **structural shape**, not a package:
 
 ```js
-{ id: 'strong', label: 'B', title: 'Bold (⌘B)', command, active? }              // a button (kind omitted)
-{ id: 'link', kind: 'field', label: 'URL', type: 'url', command, value, write } // an input
-{ id: 'region', kind: 'select', label: 'Row region', command, value, write, options } // a select
-{ separator: true }                                                             // a section break
+{ id: 'strong', label: 'B', title: 'Bold (⌘B)', command, active? }               // a button (kind omitted)
+{ id: 'link', kind: 'value', label: 'URL', type: 'url', command, value, write }  // an input
+{ id: 'region', kind: 'choice', label: 'Row region', command, value, write, options } // a select
+{ separator: true }                                                              // a section break
 ```
+
+### `kind` is closed, `as` is open
+
+The two words look alike and are not. **`kind` is what a control *is*** — `action`, `toggle`, `choice`, `value` — deduced from the declaration's shape by whoever projected it, and **behaviour follows from it**: an action runs, a value commits what it holds, a choice commits one of its members. Nobody may disagree with a kind.
+
+**`as` is how it looks**, and it is an open vocabulary: any word you write arrives untouched, because appearance is the host's. The words this element knows — `button`, `switch`, `select`, `radio`, `field`, `dropdown`, `option` — are its **floor**, the drawing to use when no template of yours matched. They are not a permitted list.
+
+The wiring is chosen from the kind and from the element your template actually handed over — a `<select>` gets select wiring, an `<input>` gets field wiring, anything else gets pressable — and **never from the word**. (It used to be chosen from the word, so a choice drawn as anything but a `<select>` got `<option>`s appended into a button and a `change` listener that could never fire. Silently.)
+
+### A choice drawn as a `dropdown`
+
+`as: 'dropdown'` on a choice gives the classic chooser: a face wearing the member the readback answers, a `popover` of the domain, one pressable per member, the current one lit, and the panel closing when you pick. Nothing new is declared for it — `options` was already the domain, `value` the readback, `write` the commit — it is the same declaration simply not flattened into a native `<select>`, which cannot wear an icon and cannot be styled. Members are drawn as `as: 'option'`, so a venue can template a panel row without touching its strip's icon-only faces; with no template they draw their words, which is what a chooser needs.
 
 `command` is dry-run for enabled-ness (`command(state)`) on every kind, and run on click for a button (`command(state, dispatch, view)`); `active(state)` lights a button. A field or select shows `value(state)` — the readback **uncollapsed**, the value itself rather than a lamp — and commits through `write(value)`, which hands back a command to run. [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' `toolbarSpecs` produces the button subset and `controlSpecs(verbs, groups, { collect })` produces all three — but **no dependency joins the two packages**: anything of this shape drives the element, the same way any plain object of the entry shape joins the verbs registry.
 

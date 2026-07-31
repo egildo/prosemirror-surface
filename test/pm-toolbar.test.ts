@@ -174,6 +174,32 @@ describe('<pm-toolbar> — sections', () => {
     expect(panel.querySelectorAll('button')).toHaveLength(1)
   })
 
+  it('leaves a closed menu closed — the display belongs to :popover-open', () => {
+    // Found by eye, in the field: "it is always open though". The UA hides a
+    // closed popover with `display: none`, and *any* author rule saying
+    // `display: flex` on the panel beats it — author beats UA whatever the
+    // specificity — so the collapsed section sat open from the moment it drew.
+    const toolbar = makeToolbar(
+      [{ group: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
+      at,
+    )
+    //
+    // Asserted on the sheet rather than on computed style: this DOM does not
+    // implement the UA popover rules, so a computed `display` here would prove
+    // nothing about a browser. The invariant is the one that was broken —
+    // **no rule gives a popover a `display` except one that requires it open.**
+    const panel = toolbar.shadowRoot!.querySelector<HTMLElement>('[popover]')!
+    expect(panel.matches(':popover-open')).toBe(false)
+
+    const rules = [...toolbar.shadowRoot!.adoptedStyleSheets[0]!.cssRules] as CSSStyleRule[]
+    const popoverRules = rules.filter((rule) => rule.selectorText?.includes('[popover]'))
+    expect(popoverRules.length).toBeGreaterThan(0)
+    for (const rule of popoverRules) {
+      if (rule.style.display) expect(rule.selectorText).toContain(':popover-open')
+    }
+    expect(popoverRules.some((rule) => rule.selectorText.includes(':popover-open') && rule.style.display)).toBe(true)
+  })
+
   it('takes a whole section away when nothing in it is available', () => {
     let ok = true
     const toolbar = makeToolbar(
@@ -251,6 +277,123 @@ describe('<pm-toolbar> — templates', () => {
       at,
     )
     expect(toolbar.shadowRoot!.querySelectorAll('button')).toHaveLength(1)
+  })
+
+  it('wires from the kind, not the word: a choice a template drew as anything else', () => {
+    // The half of the open vocabulary that used to be missing. `as` is any word
+    // a venue likes; only `kind` decides behaviour. Drawn as a plain button,
+    // this used to reach the select wiring — `<option>`s appended into a
+    // button, a `change` listener that could never fire, no error anywhere.
+    const write = vi.fn(() => vi.fn(() => true))
+    const toolbar = withTemplate(
+      `<template data-as="chip"><button type="button" class="chip"><span data-slot="label"></span></button></template>`,
+      [
+        {
+          id: 'blocktype',
+          label: 'Block type',
+          kind: 'choice',
+          as: 'chip',
+          command: () => true,
+          value: () => 'h1',
+          write,
+          options: [
+            { value: 'paragraph', label: 'Paragraph' },
+            { value: 'h1', label: 'Heading 1' },
+          ],
+        },
+      ],
+    )
+    const drawn = toolbar.querySelector('button.chip')!
+    expect(drawn.querySelectorAll('option')).toHaveLength(0)
+    // No items hole in this template: it asked for a face and nothing else, so
+    // it gets the face's own behaviour rather than an invented panel.
+    expect(toolbar.querySelector('[popover]')).toBeNull()
+  })
+
+  it('wraps each control in the container’s own item template', () => {
+    // A `<ul>` may hold only `<li>`, and that is the container's rule — so the
+    // container answers it once, instead of every verb inside claiming to be a
+    // list item and drifting from the section that required it.
+    let ok = true
+    const toolbar = withTemplate(
+      `<template data-as="button"><button type="button" class="ctl"><span data-slot="label"></span></button></template>
+       <template data-as="menu">
+         <span class="grp">
+           <button type="button" data-slot="face"></button>
+           <ul popover data-slot="items"><template data-slot="item"><li role="none"></li></template></ul>
+         </span>
+       </template>`,
+      [
+        {
+          group: 'lists',
+          label: 'Lists',
+          as: 'menu',
+          items: [
+            { id: 'bullet_list', label: 'Bulleted', command: () => ok, unavailable: 'hide' },
+            { id: 'ordered_list', label: 'Numbered', command: () => ok, unavailable: 'hide' },
+          ],
+        },
+      ],
+    )
+    const list = toolbar.querySelector('ul')!
+    expect(list.querySelectorAll(':scope > li')).toHaveLength(2)
+    expect(list.querySelector('li > button.ctl')).toBeTruthy()
+
+    toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
+    toolbar.sync()
+    const item = list.querySelector('li')!
+    const control = item.querySelector('button')!
+    expect(item.classList.contains('gone')).toBe(false)
+
+    ok = false
+    toolbar.sync()
+    // The wrapper hides, the control disables — the whole contract in two
+    // assertions. A bullet left behind for something that is not there would be
+    // the visible cost of getting this wrong.
+    expect(item.classList.contains('gone')).toBe(true)
+    expect(control.disabled).toBe(true)
+    expect(control.classList.contains('gone')).toBe(false)
+    // And the section goes with its contents, which the old collapse could not
+    // see: it asked the DOM, and the DOM still held an unmarked button.
+    expect(toolbar.querySelector('.grp')!.classList.contains('gone')).toBe(true)
+  })
+
+  it('collapses a section the venue named itself, because its panel says popover', () => {
+    // The open vocabulary, one altitude up. A venue wanting a second kind of
+    // section — a column of words beside a row of icons — should not have to
+    // call it `menu` to get the behaviour its markup plainly declared.
+    const toolbar = withTemplate(
+      `<template data-as="listing">
+         <span class="grp"><button type="button" data-slot="face"></button><ul popover data-slot="items"></ul></span>
+       </template>`,
+      [
+        {
+          group: 'lists',
+          label: 'Lists',
+          as: 'listing',
+          items: [{ id: 'bullet_list', label: 'Bulleted', command: () => true }],
+        },
+      ],
+    )
+    const panel = toolbar.querySelector('ul')!
+    expect(toolbar.querySelector('[data-slot="face"]')!.getAttribute('popovertarget')).toBe(panel.id)
+    expect(panel.querySelectorAll('button')).toHaveLength(1)
+  })
+
+  it('makes a supplied items hole a popover, though the template forgot to', () => {
+    // `popovertarget` pointing at an ordinary element is silent: the button
+    // does nothing, and nothing anywhere says why.
+    const toolbar = withTemplate(
+      `<template data-as="menu">
+         <span class="grp"><button type="button" data-slot="face"></button><ul data-slot="items"></ul></span>
+       </template>`,
+      [{ group: 'lists', label: 'Lists', as: 'menu', items: [{ id: 'bullet_list', label: 'Bulleted', command: () => true }] }],
+    )
+    const panel = toolbar.querySelector('ul')!
+    const face = toolbar.querySelector('[data-slot="face"]')!
+    expect(panel.hasAttribute('popover')).toBe(true)
+    expect(face.getAttribute('popovertarget')).toBe(panel.id)
+    expect(face.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('gives an icon-only control a real accessible name', () => {
@@ -441,6 +584,100 @@ describe('<pm-toolbar> — fields and selects', () => {
     member = null
     toolbar.sync()
     expect(select.value).toBe('')
+  })
+})
+
+describe('<pm-toolbar> — a choice drawn as a dropdown', () => {
+  const at = () => ({ top: 0, left: 0 })
+
+  function makeDropdown(value = 'h1') {
+    const write = vi.fn(() => vi.fn(() => true))
+    const toolbar = makeToolbar(
+      [
+        {
+          id: 'blocktype',
+          label: 'Block type',
+          title: 'Block type',
+          kind: 'choice',
+          as: 'dropdown',
+          icon: 'blocktype',
+          command: () => true,
+          value: () => value,
+          write,
+          options: [
+            { value: 'paragraph', label: 'Paragraph', icon: 'paragraph' },
+            { value: 'h1', label: 'Heading 1', icon: 'heading-1' },
+          ],
+        },
+      ],
+      at,
+    )
+    toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
+    return { toolbar, write }
+  }
+
+  it('draws a face and one pressable per member of the domain', () => {
+    const { toolbar } = makeDropdown()
+    const shadow = toolbar.shadowRoot!
+    const panel = shadow.querySelector('[popover]')!
+    // Nothing new was declared: `options` was already the domain, and this is
+    // the same declaration simply not flattened into a native select.
+    expect(shadow.querySelectorAll('select')).toHaveLength(0)
+    expect(panel.querySelectorAll('button')).toHaveLength(2)
+    expect(shadow.querySelector('[data-as="dropdown"] > button')!.getAttribute('popovertarget')).toBe(panel.id)
+  })
+
+  it('wears the member the readback answers, and says both halves aloud', () => {
+    const { toolbar } = makeDropdown('h1')
+    toolbar.sync()
+    const face = toolbar.shadowRoot!.querySelector('[data-as="dropdown"] > button')!
+    expect(face.textContent).toBe('Heading 1')
+    expect(face.getAttribute('aria-label')).toBe('Block type: Heading 1')
+  })
+
+  it('wears a member that carries only its value', () => {
+    // Found in the field, not here: prosemirror-spreads declares its region
+    // domain as `[{ value: 'head' }, …]` — naming your own members is taste, and
+    // plenty of plugins decline. The face read "Row region: undefined".
+    const toolbar = makeToolbar(
+      [
+        {
+          id: 'table:row-region',
+          label: 'Row region',
+          kind: 'choice',
+          as: 'dropdown',
+          command: () => true,
+          value: () => 'body',
+          write: () => () => true,
+          options: [{ value: 'head' }, { value: 'body' }, { value: 'foot' }] as any,
+        },
+      ],
+      at,
+    )
+    toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
+    toolbar.sync()
+    const face = toolbar.shadowRoot!.querySelector('[data-as="dropdown"] > button')!
+    expect(face.textContent).toBe('body')
+    expect(face.getAttribute('aria-label')).toBe('Row region: body')
+  })
+
+  it('falls back to the verb’s own name when the readback answers no member', () => {
+    // The select's blank, said the other way: a chooser showing a member it is
+    // not on would be lying.
+    const { toolbar } = makeDropdown('')
+    toolbar.sync()
+    expect(toolbar.shadowRoot!.querySelector('[data-as="dropdown"] > button')!.textContent).toBe('Block type')
+  })
+
+  it('commits the member you pick, and lights the one you are on', () => {
+    const { toolbar, write } = makeDropdown('h1')
+    toolbar.sync()
+    const [paragraph, heading] = [...toolbar.shadowRoot!.querySelectorAll<HTMLElement>('[popover] button')]
+    expect(heading!.getAttribute('aria-pressed')).toBe('true')
+    expect(paragraph!.getAttribute('aria-pressed')).toBe('false')
+
+    paragraph!.click()
+    expect(write).toHaveBeenCalledWith('paragraph')
   })
 })
 
