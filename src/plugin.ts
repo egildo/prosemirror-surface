@@ -15,16 +15,20 @@ import type { ToolbarAnchor, ToolbarItem } from './pm-toolbar.js'
 /** What the plugin actually touches — anything of this shape can be driven. */
 export interface ToolbarLike {
   specs: ToolbarItem[] | null | undefined
-  anchor: ToolbarAnchor | null
+  /** Where to float. **Optional**: a palette has none, because whether it is
+   *  there is its own open state and not a question about the selection. */
+  anchor?: ToolbarAnchor | null
   view: any
   hidden: boolean
   sync(): void
 }
 
-export const toolbarPlugin = (element: ToolbarLike, specs: ToolbarItem[], anchor: ToolbarAnchor) =>
+export const toolbarPlugin = (element: ToolbarLike, specs: ToolbarItem[], anchor?: ToolbarAnchor) =>
   new Plugin({
     view(editorView) {
-      Object.assign(element, { specs, anchor, view: editorView })
+      // Only what was given: assigning `anchor: undefined` onto a surface that
+      // has no such property would put one there.
+      Object.assign(element, { specs, view: editorView }, anchor ? { anchor } : {})
       element.sync()
 
       // update runs on every transaction, keystrokes included. A few dry runs and

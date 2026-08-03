@@ -121,6 +121,37 @@ describe('<pm-toolbar>', () => {
     expect(command).toHaveBeenCalledWith(STATE, toolbar.view.dispatch, toolbar.view)
   })
 
+  it('hands the caret back before running, so a node view finds a focused editor', () => {
+    // A no-op on a strip, where the button never took focus. Load-bearing in a
+    // palette, where focus is in the query box when the command fires.
+    const order: string[] = []
+    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => (order.push('run'), true) }], () => null)
+    toolbar.view.focus = () => order.push('focus')
+    toolbar.shadowRoot!.querySelector('button')!.click()
+    expect(order).toEqual(['focus', 'run'])
+  })
+
+  it('publishes what it does not consume, so CSS can reach it', () => {
+    // Publish, don't hole. The projection carries a host's own attributes to
+    // the spec; this carries them to the DOM, where `content: attr(data-chord)`
+    // draws an accessory and `[data-search]` filters — with no sixth hole and
+    // no idea here what a chord or a query is.
+    const command = () => true
+    const toolbar = makeToolbar(
+      [{ id: 'a', label: 'A', command, chord: '⇧⌘P', search: 'a bullet list', weight: 3, onPick: () => 1 } as any],
+      () => null,
+    )
+    const button = toolbar.shadowRoot!.querySelector<HTMLElement>('button')!
+    expect(button.dataset.chord).toBe('⇧⌘P')
+    expect(button.dataset.search).toBe('a bullet list')
+    expect(button.dataset.weight).toBe('3')
+    // Behaviour is not something to hand to CSS.
+    expect(button.dataset.onPick).toBeUndefined()
+    // And nothing this element reads for itself leaks out as an attribute.
+    expect(button.dataset.command).toBeUndefined()
+    expect(button.dataset.label).toBeUndefined()
+  })
+
   it('never takes focus: a mousedown on a button is prevented', () => {
     const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => null)
     // `composed` because the guard sits on the host now, not the shadow root —

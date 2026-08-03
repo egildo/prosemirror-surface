@@ -1,13 +1,15 @@
 # prosemirror-surface
 
-Host **chrome** for ProseMirror editors, as a clean install: a floating toolbar web component, the PluginView that drives it, and a selection anchor.
+Host **chrome** for ProseMirror editors, as a clean install: **two web components over one base**, the PluginView that drives either, and a selection anchor.
 
 The doctrine it implements comes from [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' tablet, *the ecosystem stone*: **plugins ship verbs; hosts ship chrome.** Plugins declare what can be done; the host builds — or now, installs — the furniture that summons it, once, for all plugins at the same time. This package is that furniture's first piece.
 
 ## What's inside
 
+- **`PmSurface`** — what both elements *are*, and not registered itself: templates, drawing, wiring, publishing, availability. The two surfaces differ by one question asked twice — **the base decides a section is collapsed; each surface says what collapsing means.** A strip opens a popover beside its face; a palette pushes a page you descend into. Same tree, same templates, two navigations, neither written twice.
+- **`<pm-palette>`** — a modal, searchable list: a query box, arrow keys, Enter, **Escape as *back***, a page stack, and the combobox ARIA that goes with all of it (`role="option"` rows, `aria-activedescendant` tracking the highlight). Filtering runs through a replaceable `matcher`, substring by default. Open it with `show()` / `toggle()` — which chord summons it is the host's, because summoning chrome is not a verb.
 - **`<pm-toolbar>`** — a floating command bar that knows nothing about the editor it serves. It is handed an opaque `view` (only `.state`, `.dispatch` and `.focus()` are ever touched), a list of `specs`, and an `anchor` function; it renders **buttons, fields and selects**, dry-runs commands for enabled-ness, reads `active` for lit-ness and `value` for what a control shows. Importing the package registers the element, guarded against double registration.
-- **`toolbarPlugin(element, specs, anchor)`** — the lane: a ProseMirror plugin whose PluginView wires the element and calls `element.sync()` on every state change. It touches only `.specs`, `.anchor`, `.view`, `.hidden` and `.sync()` — it neither knows nor cares that the thing it drives is a custom element.
+- **`toolbarPlugin(element, specs, anchor?)`** — the lane: a ProseMirror plugin whose PluginView wires the element and calls `element.sync()` on every state change. It touches only `.specs`, `.anchor`, `.view`, `.hidden` and `.sync()` — it neither knows nor cares that the thing it drives is a custom element. The anchor is **optional**: a palette has none, because whether it is there is its own open state and not a question about the selection.
 - **`selectionAnchor(view)`** — **what** the strip floats near: the rect the selection occupies, or `null` (hidden) when the selection is empty or the editor unfocused. Write your own for other geometries; returning `null` is the whole show/hide rule.
 - **`place(anchor, size, options)`** — **where** it goes: pure geometry, no DOM, no editor.
 
@@ -58,6 +60,18 @@ That line is what keeps this from being a framework. The element still runs the 
 - **Templates render into light DOM; defaults render into shadow.** Supply none and the strip is fully encapsulated; supply any and you have opted into owning the appearance, so your markup lands in your own cascade and your stylesheet reaches it with no `::part` ceremony. (The whole rendering moves, not just the templated parts — so once you template anything, style everything.)
 - **An unknown `as` falls back** to the kind's default *drawing*. A typo costs a switch, never a control.
 
+### The `as` vocabulary is per-surface
+
+Templates are read from **each element's own light-DOM children**, so the same word means whatever that surface's templates say. A strip's `button` is an icon; a palette's `button` is a full row with its words and its chord. No verb needs to know which surface it landed on, and nothing has to be renamed to appear in two places.
+
+Which is also the answer to *how do I avoid duplicating components*: you don't share templates between surfaces — you share **CSS**. The palette in [pm-testing-venue](https://github.com/egildo/pm-testing-venue) reuses the strip's `.ctl`, its icon block and its disabled rule, and its own templates are four elements each.
+
+### Publish, don't hole
+
+Anything on the spec this element does not itself consume is written onto the control as `data-*` and left alone — strings and numbers only, because a function is behaviour and behaviour is not something to hand to CSS.
+
+That is what keeps the hole vocabulary at five. A palette draws its chord with `content: attr(data-chord)` and filters on `[data-search]`; both are words the *host* put on the spec, carried the last step to where a stylesheet can reach them. The projection already carries a host's own attributes through (`passthrough`); this closes the loop. **Add a hole only when the thing must be an element** — focusable, or something a picture goes in.
+
 ### What is yours, said plainly
 
 The elements are yours — all of them. A template's root element *is* the group, or *is* the control's box; the element only asks that a control's box contain something it can wire (`button`, `input`, `select`, or a `[data-slot="face"]`). So a section can be a real `<ul>`, a control a real `<li>`, and the semantics of your document outline stay your business — this package ships no opinion about which element or which ARIA role a piece of chrome should be.
@@ -93,6 +107,20 @@ A section is collapsed when it **is** one, not when it is called one: with no te
 > **Styling a popover: put `display` on `:popover-open`, never on the panel itself.** The UA hides a closed popover with `display: none`, and *any* author rule setting `display` on the panel beats it — author beats UA whatever the specificity. A panel styled `display: flex` is therefore open forever. This element's own sheet had exactly that bug, and the venue's copy of it had the same; both now say `[popover]:popover-open { display: flex }`, and it is pinned by a test that reads the rules rather than the computed style, since a headless DOM has no UA popover styles to prove anything with.
 
 The element writes `aria-haspopup` and keeps `aria-expanded` true — the platform's popover does not — which means the one attribute a screen reader needs is also the one your stylesheet needs for a caret that turns over. A caret is appearance, so it belongs in your template as ordinary markup; no register should be asked to carry "this opens".
+
+## Why the palette owns Escape
+
+A palette **redefines a key**. Escape in a dialog means *close*; in a palette with a page open it means *back*, and no user agent can know that.
+
+The first cut leaned on the platform: pages were nested popovers, whose close watcher pops the innermost one. It reads beautifully and it was the wrong call, for three reasons that only showed up in the field:
+
+- **Nothing owned it.** No code, no test — and a single `stopPropagation()` on a keydown, anywhere in an ancestor, removes back-navigation silently. That happened, in this package's own venue, and went unnoticed.
+- **It could not be checked.** The close watcher is unobservable in a headless DOM, and the browser harness this was built through delivers no keydown events at all. *Back works, trust me* is not a capability.
+- **It could not be layered.** Adding a handler on top needs `preventDefault()` on the keydown to suppress the close request, and neither the HTML spec's text nor MDN says it does. Own it or trust it — there is no safe both.
+
+So pages are ordinary elements and the stack is a field. The **host** is still a popover (`manual`), because the top layer, `::backdrop` and `:popover-open` are worth having and cost nothing. What we give up is light dismiss — about ten lines, and now a thing with a test rather than a thing we hope about.
+
+The general rule this leaves behind: **the platform keeps every behaviour whose meaning we agree with, and we take the ones we redefine.**
 
 One thing the platform does not yet do for us: a popover is painted in the top layer, so `position: absolute` will not anchor it to the button that opened it. CSS anchor positioning is the native answer and is not evenly shipped, so the panel is placed with the same `place()` the strip uses, preferring `below`.
 
