@@ -224,7 +224,7 @@ export class PmPalette extends PmSurface {
   }
 
   /** A palette's half of the seam: a collapsed section is a page you push. */
-  protected override collapse(face: HTMLElement, panel: HTMLElement, _group: ToolbarGroup) {
+  protected override collapse(face: HTMLElement, panel: HTMLElement, group: ToolbarGroup) {
     // A page that arrived from a strip's template may say `popover`; it is not
     // one here, and leaving the attribute on would let the UA hide it out from
     // under us.
@@ -234,6 +234,10 @@ export class PmPalette extends PmSurface {
     show(panel, false)
     this.#pages.set(face, panel)
     face.dataset.descend = ''
+    // A page is a row with a name on it, so it answers a query by that name as
+    // well as by what is inside it. Without this, typing the word written on
+    // the face was the one way to *lose* the page it names.
+    face.dataset.search = (group.label ?? '').toLowerCase()
     face.setAttribute('aria-haspopup', 'listbox')
     face.addEventListener('click', () => this.push(panel))
   }
@@ -303,8 +307,15 @@ export class PmPalette extends PmSurface {
     // A page's face belongs to a *section*, and a section carries no words of
     // its own — so a page answers the query through its contents. Without this,
     // "Table" sat there answering a search for "bold".
-    for (const [face, panel] of this.#pages) {
-      const hit = !query || [...panel.querySelectorAll<HTMLElement>('[data-row]')].some(live)
+    //
+    // **Innermost first.** Pages are registered outermost-first, because a
+    // section is collapsed before its children are drawn — so in that order a
+    // parent is asked while its own sub-faces are still unmarked, and any page
+    // with pages inside it survives every query. Reversed, a child settles
+    // before the parent that has to count it.
+    for (const [face, panel] of [...this.#pages].reverse()) {
+      const named = this.matcher(face.dataset.search ?? '', query)
+      const hit = !query || named || [...panel.querySelectorAll<HTMLElement>('[data-row]')].some(live)
       mark(this.wrapped.get(face) ?? face, hit)
     }
     // And a heading with nothing left under it goes too. **Hidden, not marked**:

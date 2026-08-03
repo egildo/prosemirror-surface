@@ -201,6 +201,115 @@ describe('<pm-palette> — walking the list', () => {
   })
 })
 
+describe('<pm-palette> — pages inside pages', () => {
+  // Depth is what a palette is *for*: a strip cannot nest at all, and a flat
+  // list of forty commands is the problem pages solve. Nothing in the element
+  // counts levels — the stack is a stack — so this is the pin that says so.
+  const DEEP: ToolbarItem[] = [
+    { id: 'top', label: 'Top', command: () => true },
+    {
+      group: 'insert',
+      label: 'Insert',
+      as: 'page',
+      items: [
+        { id: 'figure', label: 'Figure', command: () => true },
+        {
+          group: 'insert/media',
+          label: 'Media',
+          as: 'page',
+          items: [
+            { id: 'image', label: 'Image', command: () => true },
+            { id: 'video', label: 'Video', command: () => true },
+          ],
+        },
+      ],
+    },
+  ]
+
+  const into = (palette: PmPalette, label: string) => {
+    const face = palette
+      .reachableRows()
+      .find((row) => row.textContent?.trim() === label)
+    face!.click()
+  }
+
+  it('descends twice and comes back one level at a time', () => {
+    const palette = makePalette(DEEP)
+    palette.show()
+    expect(labels(palette.reachableRows())).toEqual(['Top', 'Insert'])
+
+    into(palette, 'Insert')
+    expect(palette.depth).toBe(1)
+    expect(labels(palette.reachableRows())).toEqual(['Figure', 'Media'])
+
+    into(palette, 'Media')
+    expect(palette.depth).toBe(2)
+    expect(labels(palette.reachableRows())).toEqual(['Image', 'Video'])
+
+    // One level per Escape, all the way out — and only then does it close.
+    key(palette, 'Escape')
+    expect(palette.depth).toBe(1)
+    expect(labels(palette.reachableRows())).toEqual(['Figure', 'Media'])
+    key(palette, 'Escape')
+    expect(palette.depth).toBe(0)
+    expect(palette.open).toBe(true)
+    key(palette, 'Escape')
+    expect(palette.open).toBe(false)
+  })
+
+  it('a query reaches through both levels, and keeps the road to a match', () => {
+    const palette = makePalette(DEEP)
+    palette.show()
+    palette.query.value = 'video'
+    palette.query.dispatchEvent(new Event('input'))
+    // The way in survives even though "Insert" matches nothing itself: a page
+    // answers the query through everything under it, however deep.
+    expect(labels(palette.reachableRows())).toEqual(['Insert'])
+    into(palette, 'Insert')
+    expect(labels(palette.reachableRows())).toEqual(['Media'])
+    into(palette, 'Media')
+    expect(labels(palette.reachableRows())).toEqual(['Video'])
+  })
+
+  it('drops a whole branch whose only candidates were its own sub-pages', () => {
+    // The subtle one. A page is kept when anything under it matches — and a
+    // page's sub-*faces* are rows too, so a parent asked before its children
+    // have settled counts them as matches and survives every query. Pages are
+    // registered outermost-first, so the marking has to run the other way.
+    const TWO: ToolbarItem[] = [
+      {
+        group: 'format',
+        label: 'Format',
+        as: 'page',
+        items: [{ group: 'format/script', label: 'Script', as: 'page', items: [{ id: 'sup', label: 'Superscript', command: () => true }] }],
+      },
+      {
+        group: 'insert',
+        label: 'Insert',
+        as: 'page',
+        items: [{ group: 'insert/blocks', label: 'Blocks', as: 'page', items: [{ id: 'adm', label: 'Admonition', command: () => true }] }],
+      },
+    ]
+    const palette = makePalette(TWO)
+    palette.show()
+    expect(labels(palette.reachableRows())).toEqual(['Format', 'Insert'])
+    palette.query.value = 'admon'
+    palette.query.dispatchEvent(new Event('input'))
+    expect(labels(palette.reachableRows())).toEqual(['Insert'])
+  })
+
+  it('opens on the first page however deep it was left', () => {
+    const palette = makePalette(DEEP)
+    palette.show()
+    into(palette, 'Insert')
+    into(palette, 'Media')
+    palette.hide()
+    palette.show()
+    expect(palette.depth).toBe(0)
+    expect(labels(palette.reachableRows())).toEqual(['Top', 'Insert'])
+  })
+})
+
 describe('<pm-palette> — Enter', () => {
   it('descends into a page rather than closing', () => {
     const palette = makePalette(SPECS)
@@ -289,6 +398,16 @@ describe('<pm-palette> — filtering', () => {
     expect(labels(palette.reachableRows())).toEqual(['Table'])
     type(palette, 'bold')
     expect(labels(palette.reachableRows())).toEqual(['Bold'])
+  })
+
+  it('finds a page by the name written on it', () => {
+    // A page is a row with a name. Answering only through its contents made the
+    // word on the face the one query that lost it.
+    const palette = makePalette(SPECS)
+    palette.show()
+    palette.query.value = 'table'
+    palette.query.dispatchEvent(new Event('input'))
+    expect(labels(palette.reachableRows())).toEqual(['Table'])
   })
 
   it('takes a replacement matcher', () => {
