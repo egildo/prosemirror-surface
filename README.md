@@ -163,6 +163,7 @@ palette.show() / hide() / toggle()   // which chord summons it is yours
 palette.open        // boolean, reflected as [data-open] for CSS
 palette.query       // the <input>: set its placeholder and aria-label
 palette.matcher     // (text, query) => boolean — substring by default
+palette.separator   // ' › ' — the punctuation between a path's names
 palette.depth       // how many pages deep
 palette.at          // the highlighted row, or null
 palette.reachableRows()  // what the arrows would walk right now
@@ -187,7 +188,28 @@ So pages are ordinary elements and the stack is a field. The **host** is still a
 
 The general rule this leaves behind: **the platform keeps every behaviour whose meaning we agree with, and we take the ones we redefine.**
 
-### Filtering
+Scoping a query to the current page is what keeps that meaning single. Were a query to search the whole register from anywhere, descending would stop mattering the moment you typed, and Escape would have to decide between clearing the query and going back — an overloaded key, which is the thing this section exists to avoid.
+
+### Searching: a query flattens
+
+**The hierarchy is for browsing when you do not know the name; a query is for jumping when you do.** So typing does not narrow the tree — it collapses it:
+
+> While a query is active, the palette shows every match in the current subtree **at one level**, each carrying the path it came from. A page that matches **by its own name** stays a row you can descend into; a page that merely *contains* matches disappears in favour of what it contains.
+
+```
+(browsing)              (typing "quot")
+  Format        ▸         Quote        Structure › Wrappers   ⌘>
+  Structure     ▸         Quotation    Insert › Blocks
+  Insert        ▸
+```
+
+Anything else asks you to guess a branch and descend to find out whether you guessed right, which is the failure a palette exists to prevent. An earlier cut of this kept only the *road* to a match — you saw `Structure`, never `Quote` — and it was wrong for exactly that reason.
+
+**Scope is the page you are standing on.** At the top a query searches everything; inside `Insert` it searches only `Insert`. Descending stays meaningful, and Escape keeps its single meaning — *back* — instead of having to decide between clearing a query and popping a page.
+
+The path is `data-path`, published like every other attribute and drawn with `attr()`; `separator` is the punctuation between its names and is yours to set. A flattened panel carries `data-flat` and the host carries `data-query`, which is all a stylesheet needs to stop drawing a page as an overlay. **No sixth hole was needed for any of it.**
+
+### What is hidden, and by whom
 
 The element decides what is visible and CSS draws it — not the other way round, because navigation and `aria-activedescendant` both have to know what is reachable, and reading that back out of layout is slow and wrong the moment a venue hides something its own way.
 
@@ -195,9 +217,9 @@ Three rules, one idea seen at three depths — **hide anything with nothing left
 
 - a row whose text the `matcher` refuses;
 - a section left with no rows;
-- a page none of whose contents match — **and pages settle innermost-first**, because a parent asked while its own sub-faces are unmarked counts them as matches and survives every query.
+- a page that neither matches by name nor holds a match — **and pages settle innermost-first**, because a parent asked while its own sub-faces are unmarked counts them as matches and survives every query.
 
-A page also matches **its own name**, since it is a row with a word written on it. Search text comes from `spec.search` when a host stamped one, and otherwise from the label, the title and any `keywords` — so a palette works with no host cooperation at all.
+Search text comes from `spec.search` when a host stamped one, and otherwise from the label, the title and any `keywords` — so a palette works with no host cooperation at all.
 
 ### One consequence of templating a palette
 

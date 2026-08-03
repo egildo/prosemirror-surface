@@ -257,18 +257,61 @@ describe('<pm-palette> — pages inside pages', () => {
     expect(palette.open).toBe(false)
   })
 
-  it('a query reaches through both levels, and keeps the road to a match', () => {
+  it('lifts a match two levels down straight in front of you, with its path', () => {
+    // **A query flattens.** The hierarchy is for browsing when you do not know
+    // the name; a query is for jumping when you do — so it shows the
+    // destination, not the road. This used to answer `['Insert']` and ask you
+    // to guess which branch you meant.
     const palette = makePalette(DEEP)
     palette.show()
     palette.query.value = 'video'
     palette.query.dispatchEvent(new Event('input'))
-    // The way in survives even though "Insert" matches nothing itself: a page
-    // answers the query through everything under it, however deep.
-    expect(labels(palette.reachableRows())).toEqual(['Insert'])
-    into(palette, 'Insert')
-    expect(labels(palette.reachableRows())).toEqual(['Media'])
-    into(palette, 'Media')
     expect(labels(palette.reachableRows())).toEqual(['Video'])
+    expect(palette.reachableRows()[0]!.dataset.path).toBe('Insert › Media')
+    // Running it needs no descent at all.
+    expect(palette.at?.textContent?.trim()).toBe('Video')
+  })
+
+  it('scopes the query to the page you are standing on', () => {
+    // Egildo's ruling: at the top a query searches everything, and inside a
+    // page it searches only that page. Descending stays meaningful, and Escape
+    // never has to choose between clearing a query and going back.
+    const palette = makePalette(DEEP)
+    palette.show()
+    into(palette, 'Insert')
+    palette.query.value = 'top' // the one row that is *not* under Insert
+    palette.query.dispatchEvent(new Event('input'))
+    expect(labels(palette.reachableRows())).toEqual([])
+    palette.pop()
+    expect(labels(palette.reachableRows())).toEqual(['Top'])
+  })
+
+  it('gives way to its contents, unless it matched by its own name', () => {
+    const palette = makePalette(DEEP)
+    palette.show()
+    const type = (text: string) => {
+      palette.query.value = text
+      palette.query.dispatchEvent(new Event('input'))
+    }
+    // "media" names a page *and* nothing inside it: one row, still enterable.
+    type('media')
+    expect(labels(palette.reachableRows())).toEqual(['Media'])
+    expect(palette.reachableRows()[0]!.dataset.descend).toBe('')
+    // "image" is inside it: the page gives way rather than showing both.
+    type('image')
+    expect(labels(palette.reachableRows())).toEqual(['Image'])
+  })
+
+  it('puts the hierarchy back when the query is cleared', () => {
+    const palette = makePalette(DEEP)
+    palette.show()
+    palette.query.value = 'video'
+    palette.query.dispatchEvent(new Event('input'))
+    expect(palette.hasAttribute('data-query')).toBe(true)
+    palette.query.value = ''
+    palette.query.dispatchEvent(new Event('input'))
+    expect(palette.hasAttribute('data-query')).toBe(false)
+    expect(labels(palette.reachableRows())).toEqual(['Top', 'Insert'])
   })
 
   it('drops a whole branch whose only candidates were its own sub-pages', () => {
@@ -295,7 +338,9 @@ describe('<pm-palette> — pages inside pages', () => {
     expect(labels(palette.reachableRows())).toEqual(['Format', 'Insert'])
     palette.query.value = 'admon'
     palette.query.dispatchEvent(new Event('input'))
-    expect(labels(palette.reachableRows())).toEqual(['Insert'])
+    // The match itself, lifted out of two pages; the whole Format branch gone.
+    expect(labels(palette.reachableRows())).toEqual(['Admonition'])
+    expect(palette.reachableRows()[0]!.dataset.path).toBe('Insert › Blocks')
   })
 
   it('opens on the first page however deep it was left', () => {
@@ -395,7 +440,8 @@ describe('<pm-palette> — filtering', () => {
     const palette = makePalette(SPECS)
     palette.show()
     type(palette, 'delete')
-    expect(labels(palette.reachableRows())).toEqual(['Table'])
+    expect(labels(palette.reachableRows())).toEqual(['Delete row'])
+    expect(palette.reachableRows()[0]!.dataset.path).toBe('Table')
     type(palette, 'bold')
     expect(labels(palette.reachableRows())).toEqual(['Bold'])
   })

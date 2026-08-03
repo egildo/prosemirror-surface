@@ -85,6 +85,25 @@ paletteSheet.replaceSync(`
   /* Where the arrow keys are. Not \`:focus\` — the caret never leaves the query
      box, which is the combobox pattern and the reason typing keeps working. */
   [data-at] { background: color-mix(in srgb, AccentColor 22%, transparent); }
+
+  /* A page, while browsing: an overlay covering the list it replaces. */
+  [data-page] { position: absolute; inset: 0; z-index: 1; overflow: auto; background: Canvas; }
+  /* A page, while a query is live: no longer a place you are in, just where
+     some of these rows came from — so it flows into the list instead. */
+  [data-page][data-flat] { position: static; inset: auto; z-index: auto; background: none; }
+
+  /* The path a flattened row was lifted out of. \`order\` puts a \`::before\`
+     *after* the label, because \`::after\` is already spoken for by whatever the
+     host publishes there — and two pseudo-elements is all there is. */
+  [data-row][data-path]::before {
+    content: attr(data-path);
+    order: 1;
+    margin-left: auto;
+    padding-left: 12px;
+    opacity: 0.55;
+    font-size: 0.85em;
+  }
+  :host(:not([data-query])) [data-row]::before { content: none; }
 `)
 
 export class PmPalette extends PmSurface {
@@ -97,6 +116,10 @@ export class PmPalette extends PmSurface {
   // state machine — which is what makes back-navigation testable.
   #stack: HTMLElement[] = []
   #pages = new Map<HTMLElement, HTMLElement>() // face → panel
+  // A panel and the words on the face that opens it. Kept as written rather
+  // than as the lowercased text the face matches on, because this is what a
+  // flattened row shows as the path it came from.
+  #titles = new WeakMap<HTMLElement, string>() // panel → label
   #at: HTMLElement | null = null
   #open = false
 
@@ -233,6 +256,7 @@ export class PmPalette extends PmSurface {
     panel.setAttribute('role', 'listbox')
     show(panel, false)
     this.#pages.set(face, panel)
+    this.#titles.set(panel, group.label ?? '')
     face.dataset.descend = ''
     // A page is a row with a name on it, so it answers a query by that name as
     // well as by what is inside it. Without this, typing the word written on
@@ -278,7 +302,31 @@ export class PmPalette extends PmSurface {
     node.dataset.row = ''
     node.setAttribute('role', 'option')
     if (!node.id) node.id = `pm-row-${(rowSeq += 1)}`
+    // Where this row lives, for when a query lifts it out of there. A row on the
+    // first page has no path and gets no attribute, so a stylesheet drawing
+    // `attr(data-path)` draws nothing rather than an empty box.
+    const path = this.#pathTo(node)
+    if (path) node.dataset.path = path
+    else delete node.dataset.path
   }
+
+  /** The names of the pages this row sits inside, outermost first. */
+  #pathTo(node: HTMLElement): string {
+    const names: string[] = []
+    for (
+      let panel = node.parentElement?.closest<HTMLElement>('[data-page]') ?? null;
+      panel;
+      panel = panel.parentElement?.closest<HTMLElement>('[data-page]') ?? null
+    ) {
+      const name = this.#titles.get(panel)
+      if (name) names.unshift(name)
+    }
+    return names.join(this.separator)
+  }
+
+  /** What comes between the names in a flattened row's path. Yours to change —
+   *  it is punctuation, which is nobody's business but the host's. */
+  separator = ' › '
 
   /** What a query is matched against. A host that stamped `search` on the spec
    *  decides; otherwise it is the words, which is what makes a palette work with
@@ -295,6 +343,9 @@ export class PmPalette extends PmSurface {
    *  moment a venue hides something its own way. */
   protected refine() {
     const query = this.#query.value.trim().toLowerCase()
+    // Published, not consumed: a stylesheet needs to know a query is live, so
+    // that a flattened page can drop the overlay it only wears while browsing.
+    this.toggleAttribute('data-query', !!query)
     // **`data-off` is why the query needs its own mark.** A closed page is
     // hidden, so every row inside one *looks* hidden — and asking "is anything
     // in here still showing" would answer no for every page you are not
@@ -314,9 +365,20 @@ export class PmPalette extends PmSurface {
     // with pages inside it survives every query. Reversed, a child settles
     // before the parent that has to count it.
     for (const [face, panel] of [...this.#pages].reverse()) {
-      const named = this.matcher(face.dataset.search ?? '', query)
-      const hit = !query || named || [...panel.querySelectorAll<HTMLElement>('[data-row]')].some(live)
-      mark(this.wrapped.get(face) ?? face, hit)
+      const named = !!query && this.matcher(face.dataset.search ?? '', query)
+      const inside = [...panel.querySelectorAll<HTMLElement>('[data-row]')].some(live)
+      // **A query flattens; the hierarchy is for browsing.** A page that merely
+      // *contains* matches gives way to what it contains — otherwise the palette
+      // shows a road and never its destination, and you must guess a branch and
+      // descend to find out whether you guessed right. A page that matches by
+      // its own **name** is a different thing: it stays one row you can enter,
+      // because showing its face *and* everything inside it is the same list
+      // twice.
+      const flat = !!query && !named && inside
+      mark(this.wrapped.get(face) ?? face, !query || named)
+      panel.toggleAttribute('data-flat', flat)
+      // Flattened, or on the stack — the two reasons a panel is on screen.
+      show(panel, flat || this.#stack.includes(panel))
     }
     // And a heading with nothing left under it goes too. **Hidden, not marked**:
     // `data-off` is read by walking up from a row, so putting one on a section
@@ -335,11 +397,20 @@ export class PmPalette extends PmSurface {
    *  would the arrows do", and a host testing its own palette deserves it. */
   reachableRows(): HTMLElement[] {
     const page = this.#stack.at(-1) ?? null
+    const flattening = !!this.#query.value.trim()
     return [...(this.#list ?? this.target).querySelectorAll<HTMLElement>('[data-row]')].filter((row) => {
       if ((row as HTMLButtonElement).disabled) return false
       if (hidden(row)) return false
-      // The *nearest* page ancestor, so nested pages answer for their own rows —
-      // and a page's face answers to the page it sits in, not the one it opens.
+      // **Browsing asks which page you are on; a query asks which subtree.** So
+      // while one is live a row counts if the page you stand on *contains* it,
+      // however deep — which is what puts a match two levels down in front of
+      // you instead of the road to it. Rows inside a page that only matched by
+      // name are still excluded, because that panel stayed closed and `hidden`
+      // has already answered for them.
+      if (flattening) return page ? page.contains(row) : true
+      // Browsing: the *nearest* page ancestor, so nested pages answer for their
+      // own rows — and a page's face answers to the page it sits in, not the
+      // one it opens.
       return (row.closest('[data-page]') as HTMLElement | null) === page
     })
   }
