@@ -2,40 +2,42 @@
 
 Host **chrome** for ProseMirror editors, as a clean install: **two web components over one base**, the PluginView that drives either, and a selection anchor.
 
-The doctrine it implements comes from [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' tablet, *the ecosystem stone*: **plugins ship verbs; hosts ship chrome.** Plugins declare what can be done; the host builds — or now, installs — the furniture that summons it, once, for all plugins at the same time. This package is that furniture's first piece.
+The doctrine it implements comes from [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' tablet, *the ecosystem stone*: **plugins ship verbs; hosts ship chrome.** Plugins declare what can be done; the host builds — or now, installs — the furniture that summons it, once, for all plugins at the same time.
 
 ## What's inside
 
-- **`PmSurface`** — what both elements *are*, and not registered itself: templates, drawing, wiring, publishing, availability. The two surfaces differ by one question asked twice — **the base decides a section is collapsed; each surface says what collapsing means.** A strip opens a popover beside its face; a palette pushes a page you descend into. Same tree, same templates, two navigations, neither written twice.
-- **`<pm-palette>`** — a modal, searchable list: a query box, arrow keys, Enter, **Escape as *back***, a page stack, and the combobox ARIA that goes with all of it (`role="option"` rows, `aria-activedescendant` tracking the highlight). Filtering runs through a replaceable `matcher`, substring by default. Open it with `show()` / `toggle()` — which chord summons it is the host's, because summoning chrome is not a verb.
-- **`<pm-toolbar>`** — a floating command bar that knows nothing about the editor it serves. It is handed an opaque `view` (only `.state`, `.dispatch` and `.focus()` are ever touched), a list of `specs`, and an `anchor` function; it renders **buttons, fields and selects**, dry-runs commands for enabled-ness, reads `active` for lit-ness and `value` for what a control shows. Importing the package registers the element, guarded against double registration.
-- **`toolbarPlugin(element, specs, anchor?)`** — the lane: a ProseMirror plugin whose PluginView wires the element and calls `element.sync()` on every state change. It touches only `.specs`, `.anchor`, `.view`, `.hidden` and `.sync()` — it neither knows nor cares that the thing it drives is a custom element. The anchor is **optional**: a palette has none, because whether it is there is its own open state and not a question about the selection.
-- **`selectionAnchor(view)`** — **what** the strip floats near: the rect the selection occupies, or `null` (hidden) when the selection is empty or the editor unfocused. Write your own for other geometries; returning `null` is the whole show/hide rule.
-- **`place(anchor, size, options)`** — **where** it goes: pure geometry, no DOM, no editor.
+| | |
+|---|---|
+| **`PmSurface`** | What both elements *are*, and not registered itself: templates, drawing, wiring, publishing, availability. |
+| **`<pm-toolbar>`** | A command bar that floats by the selection or docks in the flow. |
+| **`<pm-palette>`** | A modal, searchable list you walk with the arrows and descend into. |
+| **`toolbarPlugin(element, specs, anchor?)`** | The lane: a PluginView that wires either element and calls `sync()` on every state change. |
+| **`selectionAnchor(view)`** | **What** a strip floats near: the rect the selection occupies, or `null` for "nothing to show". |
+| **`place(anchor, size, options)`** | **Where** it goes: pure geometry, no DOM, no editor. |
 
-## Anchoring and placement
+Importing the package registers both elements, guarded against double registration. Neither knows anything about the editor it serves: each is handed an opaque `view` (only `.state`, `.dispatch` and `.focus()` are ever touched) and a **tree** of specs.
 
-Two jobs, deliberately separate — the same split this ecosystem draws everywhere else. The **anchor** says *what I am about*; the **element** says *where I go*.
+## Two surfaces, one base
 
-```js
-anchor: (view) => ({ top, left, bottom?, right? }) | null
+The two differ by **one question asked twice**. The base decides a section is *collapsed*; each surface says what collapsing *means*:
+
+```ts
+// PmSurface — is this section hidden behind one face?
+protected collapses(as: string, hole: HTMLElement | null): boolean
+
+// …and what does that mean here?
+protected abstract collapse(face: HTMLElement, panel: HTMLElement, group: ToolbarGroup): void
 ```
 
-A **rect**, because a point cannot be flipped: choosing the other side needs the far edge of the thing you are avoiding, and staying on screen needs your own width. `bottom` and `right` default to `top` and `left` — a zero-size rect — so an anchor written against the older point contract keeps working and simply gains the clamping.
+`PmToolbar` answers with a **popover beside the face**. `PmPalette` answers with a **page you push**. Same tree, same templates, two navigations, neither written twice — which is the claim prosemirror-verbs' V14 makes about projections, expressed here in the type system rather than in prose.
 
-The element measures itself, calls `place()`, and writes real `top`/`left`. Above by default (chrome that covers what you just selected is chrome you have to move), flipped below when there is no room above, and pulled back inside the viewport at either edge — which is the bug this replaces: a selection near the left margin used to put half the strip off-screen with its first buttons unreachable.
+One smaller seam sits beside it: `divider()` returns what falls between two adjacent sections. A strip draws a rule; a palette answers `null`, because a list that gives its sections headings needs nothing between them.
 
-There is **no CSS transform** any more. `translate(-50%, -100%)` used to do the centring and the lift, and that was precisely why the strip could not be kept on screen: a transform is applied after layout, so the coordinates JS writes are not the box's real corner, and clamping them clamps the wrong number.
-
-The result rides out as `data-side="above|below"` for stylesheets that care — a pointer arrow has to swap ends. The strip also re-places itself on **scroll** and **resize**, the two things that change the answer without changing the editor's state, so no transaction fires to say so.
-
-`place()` is exported and tested on its own, which is the point of its being a function rather than a method: geometry written inside an element is geometry nobody can check.
-
-*On the platform's own answer: CSS anchor positioning — `anchor-name`, `position-area`, `position-try-fallbacks: flip-block, flip-inline` — is this file in a declaration, and it is where this should end up. It is not evenly shipped across engines yet, and a surface that works in one engine is not a surface. When it is, `place()` becomes the fallback rather than the mechanism, and the contract above does not change.*
+Subclassing is a supported way to write a third surface. Everything the two shipped ones use is `protected`, not private.
 
 ## Templates: your markup, our behaviour
 
-The element draws a built-in for each `as` it knows. Supply a `<template data-as="…">` as a **light-DOM child** and it draws yours instead:
+A surface draws a built-in for each `as` it knows. Supply a `<template data-as="…">` as a **light-DOM child** and it draws yours instead:
 
 ```html
 <pm-toolbar>
@@ -57,7 +59,7 @@ That line is what keeps this from being a framework. The element still runs the 
 
 - **Keyed by `as`, never by id.** One template per drawing, applied to every control of that drawing, is consistent by construction — a per-control override would drift the first time somebody was in a hurry.
 - **Five holes**: `icon`, `label`, `face`, `items`, `item`. A sixth has to earn its place, because this is where a template language would start. No conditionals, no loops, no expressions — a template that needs to *decide* something is describing a decision that belongs in the host's cascade, where `describe()` can explain it.
-- **Templates render into light DOM; defaults render into shadow.** Supply none and the strip is fully encapsulated; supply any and you have opted into owning the appearance, so your markup lands in your own cascade and your stylesheet reaches it with no `::part` ceremony. (The whole rendering moves, not just the templated parts — so once you template anything, style everything.)
+- **Templates render into light DOM; defaults render into shadow.** Supply none and the surface is fully encapsulated; supply any and you have opted into owning appearance, so your markup lands in your own cascade and your stylesheet reaches it with no `::part` ceremony. (The whole rendering moves, not just the templated parts — so once you template anything, style everything.)
 - **An unknown `as` falls back** to the kind's default *drawing*. A typo costs a switch, never a control.
 
 ### The `as` vocabulary is per-surface
@@ -68,9 +70,22 @@ Which is also the answer to *how do I avoid duplicating components*: you don't s
 
 ### Publish, don't hole
 
-Anything on the spec this element does not itself consume is written onto the control as `data-*` and left alone — strings and numbers only, because a function is behaviour and behaviour is not something to hand to CSS.
+Anything on the spec a surface does not itself consume is written onto the control as `data-*` and left alone — strings and numbers only, because a function is behaviour and behaviour is not something to hand to CSS.
 
 That is what keeps the hole vocabulary at five. A palette draws its chord with `content: attr(data-chord)` and filters on `[data-search]`; both are words the *host* put on the spec, carried the last step to where a stylesheet can reach them. The projection already carries a host's own attributes through (`passthrough`); this closes the loop. **Add a hole only when the thing must be an element** — focusable, or something a picture goes in.
+
+### Icons are names
+
+A surface **never resolves an icon**. It writes the name onto the template's icon hole as `data-icon` and stops:
+
+```css
+[data-icon] { mask: center / contain no-repeat; background: currentColor }
+[data-icon="row-add-after"] { mask-image: url(icons/row-add-after.svg) }
+```
+
+An icon font, an SVG symbol, a letter in `content:` — all the same to this package, and they mix freely in one strip. `mask` plus `currentColor` gets you hover, disabled and inherited colour for free.
+
+**Consequence worth knowing**: an icon-only control has no text node, so the accessible name is the only name there is. The element writes `aria-label` from `title` for exactly that reason, and it is pinned in the tests.
 
 ### What is yours, said plainly
 
@@ -98,17 +113,67 @@ A `<ul>` may hold only `<li>`. That is the **container's** rule, not the item's 
 
 Every child drawn into that hole is wrapped in a clone. Without it the wrapper would have to ride on each verb's own `as`, and a verb's drawing would silently owe something to whichever section it happened to land in — the drift that keying by `as` exists to prevent.
 
-### Sections, and menus for free
+## Sections
 
-A section arrives as `{ group, label, as?, icon?, items }` and is drawn `inline` (children as siblings, via `display: contents`, which is today's strip) or as a `menu` — one face plus a `popover`. Open, close, light dismiss, the top layer and Escape are the platform's; **this element writes no open/close code at all**, only `popovertarget`.
+A section arrives as `{ group, label, as?, icon?, items }`, holds controls **and further sections**, and is drawn `inline` (children as siblings, via `display: contents`) or collapsed behind one face.
 
-A section is collapsed when it **is** one, not when it is called one: with no template that means the word `menu`, and with a template it means the markup — a panel you wrote `popover` on is a panel meant to open, whatever you called the drawing. So a venue may invent a second kind of section (a column of words beside a row of icons) without having to lie about its name. If your items hole forgets the `popover` attribute, the element adds it — `popovertarget` aimed at an ordinary element is silent, and silence is the worst failure a control can have.
+A section is collapsed when it **is** one, not when it is called one: with no template that means the word `menu`, and with a template it means the markup — a panel you wrote `popover` on is a panel meant to open, whatever you called the drawing. So a venue may invent a second kind of section without having to lie about its name. If your items hole forgets the `popover` attribute, a toolbar adds it; `popovertarget` aimed at an ordinary element is silent, and silence is the worst failure a control can have.
 
-> **Styling a popover: put `display` on `:popover-open`, never on the panel itself.** The UA hides a closed popover with `display: none`, and *any* author rule setting `display` on the panel beats it — author beats UA whatever the specificity. A panel styled `display: flex` is therefore open forever. This element's own sheet had exactly that bug, and the venue's copy of it had the same; both now say `[popover]:popover-open { display: flex }`, and it is pinned by a test that reads the rules rather than the computed style, since a headless DOM has no UA popover styles to prove anything with.
+Nesting is unbounded and needs nothing declared for it: sections hold sections, so a strip gets dropdowns inside dropdowns and a palette gets pages inside pages from the same tree.
+
+Open, close, light dismiss, the top layer and Escape are the platform's for a **menu** — this package writes no open/close code at all, only `popovertarget`. What it does write is the geometry: a popover paints in the top layer, so `position: absolute` cannot anchor it to the button that opened it, and CSS anchor positioning is not evenly shipped yet. So a panel is put where `place()` says, preferring below.
+
+A section with nothing available in it disappears, and so does the divider that no longer divides anything — separator-trimming, one altitude up.
 
 The element writes `aria-haspopup` and keeps `aria-expanded` true — the platform's popover does not — which means the one attribute a screen reader needs is also the one your stylesheet needs for a caret that turns over. A caret is appearance, so it belongs in your template as ordinary markup; no register should be asked to carry "this opens".
 
-## Why the palette owns Escape
+> **Styling a popover: put `display` on `:popover-open`, never on the panel itself.** The UA hides a closed popover with `display: none`, and *any* author rule setting `display` on the panel beats it — author beats UA whatever the specificity. A panel styled `display: flex` is therefore open forever. This element's own sheet had exactly that bug, and the venue's copy of it had the same; both now say `[popover]:popover-open { display: flex }`, pinned by a test that reads the rules rather than the computed style, since a headless DOM has no UA popover styles to prove anything with.
+
+## `<pm-toolbar>`
+
+A strip. Its own concerns are **where it goes** and **whether it is there** — everything else is the base.
+
+```js
+toolbar.anchor = selectionAnchor          // (view) => Rect | null
+toolbar.placement = 'anchored' | 'docked' // floating, or in the document's flow
+```
+
+Two jobs, deliberately separate. The **anchor** says *what I am about*; the **element** says *where I go*.
+
+```js
+anchor: (view) => ({ top, left, bottom?, right? }) | null
+```
+
+A **rect**, because a point cannot be flipped: choosing the other side needs the far edge of the thing you are avoiding, and staying on screen needs your own width. `bottom` and `right` default to `top` and `left` — a zero-size rect — so an anchor written against the older point contract keeps working and simply gains the clamping. Returning `null` is the whole show/hide rule.
+
+The element measures itself, calls `place()`, and writes real `top`/`left`. Above by default (chrome that covers what you just selected is chrome you have to move), flipped below when there is no room above, and pulled back inside the viewport at either edge. The result rides out as `data-side="above|below"` for stylesheets that care — a pointer arrow has to swap ends. It re-places itself on **scroll** and **resize**, the two things that change the answer without changing the editor's state, so no transaction fires to say so.
+
+There is **no CSS transform**. `translate(-50%, -100%)` used to do the centring and the lift, and that was precisely why the strip could not be kept on screen: a transform is applied after layout, so the coordinates JS writes are not the box's real corner, and clamping them clamps the wrong number.
+
+`place()` is exported and tested on its own, which is the point of its being a function rather than a method: geometry written inside an element is geometry nobody can check.
+
+*On the platform's own answer: CSS anchor positioning — `anchor-name`, `position-area`, `position-try-fallbacks: flip-block, flip-inline` — is this file in a declaration, and it is where this should end up. It is not evenly shipped across engines yet, and a surface that works in one engine is not a surface. When it is, `place()` becomes the fallback rather than the mechanism, and the contract above does not change.*
+
+## `<pm-palette>`
+
+The same registry, laid out as a list you search, walk and descend into. It has no anchor: whether it is there is its own state, not a question about the selection.
+
+```js
+palette.show() / hide() / toggle()   // which chord summons it is yours
+palette.open        // boolean, reflected as [data-open] for CSS
+palette.query       // the <input>: set its placeholder and aria-label
+palette.matcher     // (text, query) => boolean — substring by default
+palette.depth       // how many pages deep
+palette.at          // the highlighted row, or null
+palette.reachableRows()  // what the arrows would walk right now
+palette.push(panel) / pop() / reset() / move(step) / activate()
+```
+
+**Keys it owns**: `↑ ↓` move over reachable rows and wrap; `Home` / `End` go to the ends; `Enter` descends if the row is a page face and otherwise runs and closes; `Escape` pops a page, and closes only when there is nowhere left to go. Everything else is typing and is deliberately **not** stopped.
+
+**ARIA is not optional here**, and is the clearest single reason this lives in the package rather than in each venue: the query is a `role="combobox"` with `aria-expanded` and `aria-controls`, rows are `role="option"` with generated ids, and `aria-activedescendant` tracks the highlight and clears on close. The caret never leaves the query box — that is the combobox pattern, and the reason typing keeps working while the arrows move a selection somewhere else.
+
+### Why the palette owns Escape
 
 A palette **redefines a key**. Escape in a dialog means *close*; in a palette with a page open it means *back*, and no user agent can know that.
 
@@ -122,77 +187,98 @@ So pages are ordinary elements and the stack is a field. The **host** is still a
 
 The general rule this leaves behind: **the platform keeps every behaviour whose meaning we agree with, and we take the ones we redefine.**
 
-One thing the platform does not yet do for us: a popover is painted in the top layer, so `position: absolute` will not anchor it to the button that opened it. CSS anchor positioning is the native answer and is not evenly shipped, so the panel is placed with the same `place()` the strip uses, preferring `below`.
+### Filtering
 
-A section with nothing available in it disappears, and so does the divider that no longer divides anything — separator-trimming, one altitude up.
+The element decides what is visible and CSS draws it — not the other way round, because navigation and `aria-activedescendant` both have to know what is reachable, and reading that back out of layout is slow and wrong the moment a venue hides something its own way.
 
-### Icons are names
+Three rules, one idea seen at three depths — **hide anything with nothing left in it**:
 
-The element **never resolves an icon**. It writes the name onto the template's icon hole as `data-icon` and stops:
+- a row whose text the `matcher` refuses;
+- a section left with no rows;
+- a page none of whose contents match — **and pages settle innermost-first**, because a parent asked while its own sub-faces are unmarked counts them as matches and survives every query.
 
-```css
-[data-icon] { mask: center / contain no-repeat; background: currentColor }
-[data-icon="row-add-after"] { mask-image: url(icons/row-add-after.svg) }
-```
+A page also matches **its own name**, since it is a row with a word written on it. Search text comes from `spec.search` when a host stamped one, and otherwise from the label, the title and any `keywords` — so a palette works with no host cooperation at all.
 
-An icon font, an SVG symbol, a letter in `content:` — all the same to this package. `mask` plus `currentColor` gets you hover, disabled and dark mode for free.
+### One consequence of templating a palette
 
-**Consequence worth knowing**: an icon-only control has no text node, so the accessible name is the only name there is. The element writes `aria-label` from `title` for exactly that reason, and it is pinned in the tests.
+With templates supplied, a surface draws into light DOM — **including the palette's own query box and listbox**, which its shadow styling then cannot reach. That is the documented bargain rather than an oversight: supply templates and the look is yours, all of it. Style `.query` and `.list` yourself, or supply no templates and keep the built-in rendering.
 
 ## The spec contract
 
-The element eats a **structural shape**, not a package:
+Either element eats a **structural shape**, not a package:
 
 ```js
-{ id: 'strong', label: 'B', title: 'Bold (⌘B)', command, active? }               // a button (kind omitted)
-{ id: 'link', kind: 'value', label: 'URL', type: 'url', command, value, write }  // an input
+{ id: 'strong', label: 'B', title: 'Bold (⌘B)', command, active? }                    // a button (kind omitted)
+{ id: 'link', kind: 'value', label: 'URL', type: 'url', command, value, write }       // an input
 { id: 'region', kind: 'choice', label: 'Row region', command, value, write, options } // a select
-{ separator: true }                                                              // a section break
+{ group: 'insert', label: 'Insert', as: 'menu', items: [...] }                        // a section
+{ separator: true }                                                                   // a section break
 ```
 
 ### `kind` is closed, `as` is open
 
 The two words look alike and are not. **`kind` is what a control *is*** — `action`, `toggle`, `choice`, `value` — deduced from the declaration's shape by whoever projected it, and **behaviour follows from it**: an action runs, a value commits what it holds, a choice commits one of its members. Nobody may disagree with a kind.
 
-**`as` is how it looks**, and it is an open vocabulary: any word you write arrives untouched, because appearance is the host's. The words this element knows — `button`, `switch`, `select`, `radio`, `field`, `dropdown`, `option` — are its **floor**, the drawing to use when no template of yours matched. They are not a permitted list.
+**`as` is how it looks**, and it is an open vocabulary: any word you write arrives untouched, because appearance is the host's. The words this package knows — `button`, `switch`, `select`, `radio`, `field`, `dropdown`, `option`, and `menu` for a section — are its **floor**, the drawing to use when no template of yours matched. They are not a permitted list.
 
 The wiring is chosen from the kind and from the element your template actually handed over — a `<select>` gets select wiring, an `<input>` gets field wiring, anything else gets pressable — and **never from the word**. (It used to be chosen from the word, so a choice drawn as anything but a `<select>` got `<option>`s appended into a button and a `change` listener that could never fire. Silently.)
 
 ### A choice drawn as a `dropdown`
 
-`as: 'dropdown'` on a choice gives the classic chooser: a face wearing the member the readback answers, a `popover` of the domain, one pressable per member, the current one lit, and the panel closing when you pick. Nothing new is declared for it — `options` was already the domain, `value` the readback, `write` the commit — it is the same declaration simply not flattened into a native `<select>`, which cannot wear an icon and cannot be styled. Members are drawn as `as: 'option'`, so a venue can template a panel row without touching its strip's icon-only faces; with no template they draw their words, which is what a chooser needs.
+`as: 'dropdown'` on a choice gives the classic chooser: a face wearing the member the readback answers, a `popover` of the domain, one pressable per member, the current one lit, and the panel closing when you pick. Nothing new is declared for it — `options` was already the domain, `value` the readback, `write` the commit — it is the same declaration simply not flattened into a native `<select>`, which cannot wear an icon and cannot be styled. Members are drawn as `as: 'option'`.
 
-`command` is dry-run for enabled-ness (`command(state)`) on every kind, and run on click for a button (`command(state, dispatch, view)`); `active(state)` lights a button. A field or select shows `value(state)` — the readback **uncollapsed**, the value itself rather than a lamp — and commits through `write(value)`, which hands back a command to run. [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' `toolbarSpecs` produces the button subset and `controlSpecs(verbs, groups, { collect })` produces all three — but **no dependency joins the two packages**: anything of this shape drives the element, the same way any plain object of the entry shape joins the verbs registry.
+`command` is dry-run for enabled-ness (`command(state)`) on every kind, and run on click for a button (`command(state, dispatch, view)`); `active(state)` lights a button. A field or select shows `value(state)` — the readback **uncollapsed**, the value itself rather than a lamp — and commits through `write(value)`, which hands back a command to run. [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' `controlTree(verbs, groups, { collect })` produces exactly this shape — but **no dependency joins the two packages**: anything of this shape drives either element.
 
 ### Focus, and the one place the original law bends
 
-A button **never takes focus** — the element prevents `mousedown` in its shadow, because a click must not disturb the selection the command acts on. A field cannot work that way: you have to be able to type into it. The law is now conditional, and three things keep it safe:
+A button **never takes focus** — the element prevents `mousedown`, because a click must not disturb the selection the command acts on. A field cannot work that way: you have to be able to type into it. The law is conditional, and three things keep it safe:
 
-1. **The editor's selection is state, not focus.** It survives the blur intact, so the command still acts on exactly what the strip was serving.
-2. **The caret is handed back before the command runs** — `view.focus()`, then the command — so a node view that claims its own DOM seat during the dispatch (a spreadsheet cell) finds a focused editor when it looks.
-3. **The strip stays put while engaged.** An anchor that reads focus (`selectionAnchor` does) reports "nothing to show" the instant a field is clicked; `sync()` therefore holds position and visibility whenever a control in the shadow root holds focus.
+1. **The editor's selection is state, not focus.** It survives the blur intact, so the command still acts on exactly what the surface was serving.
+2. **The caret is handed back before the command runs** — `view.focus()`, then the command — so a node view that claims its own DOM seat during the dispatch (a spreadsheet cell) finds a focused editor when it looks. This is why a palette row works at all: focus is in the query box when it fires.
+3. **A strip stays put while engaged.** An anchor that reads focus (`selectionAnchor` does) reports "nothing to show" the instant a field is clicked; `sync()` therefore holds position and visibility whenever a control holds focus.
 
 A focused control also keeps whatever is in it — `sync()` never overwrites the value under a typist's hands. `Enter` commits, `Escape` restores and returns the caret, and a value is never committed twice.
 
 ## Hosting it
 
 ```js
-import { toolbarPlugin, selectionAnchor } from 'prosemirror-surface' // registers <pm-toolbar>
-import { controlSpecs } from 'prosemirror-verbs'
+import { toolbarPlugin, selectionAnchor } from 'prosemirror-surface' // registers both elements
+import { controlTree } from 'prosemirror-verbs'
+
+const items = (opts) => controlTree(verbs, GROUPS, opts).items
 
 const toolbar = document.createElement('pm-toolbar')
-document.body.append(toolbar) // the host owns the element's existence
+const palette = document.createElement('pm-palette')
+document.body.append(toolbar, palette) // the host owns the elements' existence
+
+// Which chord summons the palette is yours: summoning chrome is not a verb.
+addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'p' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+    e.preventDefault()
+    palette.toggle()
+  }
+})
 
 const plugins = [
   ...otherPlugins,
-  toolbarPlugin(toolbar, controlSpecs(verbs, ['marks', 'blocktype'], { collect }), selectionAnchor),
+  toolbarPlugin(toolbar, items({ collect }), selectionAnchor),
+  // No anchor: a palette's being-there is its own state.
+  toolbarPlugin(palette, items({ collect, face: 'words' })),
 ]
 ```
 
-The toolbar is a form bound to the selection: readbacks are its current values, commands its setters.
+`face: 'words'` is prosemirror-verbs' way of saying *this surface's face is a label, not a picture* — without it a palette cannot see the verbs no strip would promote, which is most of the reason to have one.
+
+A toolbar is a form bound to the selection: readbacks are its current values, commands its setters. A palette is the same register with the curation taken off.
 
 ## Status
 
-Extracted 2026-07-19 from [pm-testing-venue](https://github.com/egildo/pm-testing-venue), which remains the proving ground. This is deliberately a stub with discipline: the intended destination is the unified surface — a toolbar on a selection that morphs into a command palette when summoned — and its open questions (the focus handoff, focus scope, the top layer) are tracked in prosemirror-verbs' tablet, not here. What ships today is the honest subset that exists and is exercised.
+Extracted 2026-07-19 from [pm-testing-venue](https://github.com/egildo/pm-testing-venue), which remains the proving ground.
 
-Fields and selects landed 2026-07-27, and with them the first narrow crossing of the focus line the palette will one day have to cross wholesale. Narrow deliberately: one control at a time, no keyboard capture, no summon chord. The palette's questions stay open.
+The destination named in the original stub — *a toolbar on a selection that morphs into a command palette when summoned* — **arrived on 2026-08-03**, and not as a morph: two elements over one base turned out to be the honest shape, because a strip and a palette disagree about placement, about dismissal and about what Escape means, and about nothing else. Fields and selects landed 2026-07-27 and crossed the focus line for the first time; the palette crossed it wholesale.
+
+Known and deliberate, in case it reads as an oversight:
+
+- **The exported type names still say `Toolbar`** — `ToolbarSpec`, `ToolbarItem`, `ToolbarGroup`, `ToolbarCommand`, `toolbarPlugin`. They predate the split and are shared by both surfaces. Renaming is an API break for no behaviour, so it waits for a release that has another reason to break.
+- **`switch` and `radio` are floor words with no built-in drawing yet** — supply a template and they work today; without one they fall back to a button and a select.
+- **No fuzzy matching.** `matcher` is the seam; substring is the default, and the day one is wanted it is a function, not a feature.
