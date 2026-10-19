@@ -500,6 +500,16 @@ describe('<pm-toolbar> — fields and selects', () => {
     expect(toolbar.view.focus).toHaveBeenCalled()
   })
 
+  it('sends no value for an emptied field, and lets the verb say what absence means', () => {
+    // A link emptied of its address is no link; an empty string would only be
+    // refused at the door as a malformed URL.
+    const { toolbar, input, run } = makeField()
+    toolbar.sync()
+    input.value = '  '
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(run).toHaveBeenCalledWith('f', {}, toolbar.view)
+  })
+
   it('never commits twice for one value — Enter, then the change behind it', () => {
     const { toolbar, input, run } = makeField()
     toolbar.sync()

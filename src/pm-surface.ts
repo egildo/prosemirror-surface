@@ -781,15 +781,17 @@ export abstract class PmSurface extends HTMLElement {
   // components during the dispatch (a node view claiming a cell) needs to see a
   // focused editor while the transaction is applied, not one microtask later.
   //
-  // A field holds text; a `number` argument is sent as a number, and an emptied
-  // one is sent as no value at all, which the verb reads as "clear".
+  // A field holds text; a `number` argument is sent as a number. An emptied
+  // field sends no value at all, whatever its type — the verb decides what
+  // absence means (a link with no address is no link, a width with none is the
+  // default), and an empty string would only be refused as a malformed one.
   protected commit(spec: ToolbarSpec, value: string) {
     if (this.shown.get(spec.id) === value) return
     const arg = spec.args?.[0]
     if (!arg) return
     this.shown.set(spec.id, value)
     this.view?.focus?.()
-    const args = arg.type !== 'number' ? { [arg.name]: value } : value.trim() === '' ? {} : { [arg.name]: Number(value) }
+    const args = value.trim() === '' ? {} : { [arg.name]: arg.type === 'number' ? Number(value) : value }
     this.run?.(spec.id, args, this.view)
   }
 
