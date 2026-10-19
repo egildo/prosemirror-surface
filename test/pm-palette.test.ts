@@ -15,13 +15,12 @@ import { PmPalette, type ToolbarItem } from '../src/index.js'
 
 const STATE = { token: true }
 
-const run = () => vi.fn(() => true)
-
 function makePalette(specs: ToolbarItem[], templates = '') {
   const palette = document.createElement('pm-palette') as PmPalette
   if (templates) palette.insertAdjacentHTML('afterbegin', templates)
   document.body.append(palette)
   palette.view = { state: STATE, dispatch: vi.fn(), focus: vi.fn() }
+  palette.run = vi.fn()
   palette.specs = specs
   return palette
 }
@@ -40,21 +39,21 @@ const find = (palette: PmPalette, selector: string) =>
 // A flat list plus one section you descend into — the shape the venue draws.
 const SPECS: ToolbarItem[] = [
   {
-    group: 'marks',
+    id: 'marks',
     label: 'Format',
     as: 'inline',
     items: [
-      { id: 'strong', label: 'Bold', command: () => true },
-      { id: 'em', label: 'Italic', command: () => true },
+      { id: 'strong', label: 'Bold' },
+      { id: 'em', label: 'Italic' },
     ],
   },
   {
-    group: 'table',
+    id: 'table',
     label: 'Table',
     as: 'page',
     items: [
-      { id: 'row-add', label: 'Add row', command: () => true },
-      { id: 'row-del', label: 'Delete row', command: () => true },
+      { id: 'row-add', label: 'Add row' },
+      { id: 'row-del', label: 'Delete row' },
     ],
   },
 ]
@@ -170,11 +169,11 @@ describe('<pm-palette> — walking the list', () => {
     expect(palette.at?.textContent?.trim()).toBe('Bold')
   })
 
-  it('skips what the dry run refused', () => {
+  it('skips what the projection withheld', () => {
     const palette = makePalette([
-      { id: 'a', label: 'A', command: () => true },
-      { id: 'b', label: 'B', command: () => false },
-      { id: 'c', label: 'C', command: () => true },
+      { id: 'a', label: 'A' },
+      { id: 'b', label: 'B', enabled: false },
+      { id: 'c', label: 'C' },
     ])
     palette.show()
     palette.sync()
@@ -206,20 +205,20 @@ describe('<pm-palette> — pages inside pages', () => {
   // list of forty commands is the problem pages solve. Nothing in the element
   // counts levels — the stack is a stack — so this is the pin that says so.
   const DEEP: ToolbarItem[] = [
-    { id: 'top', label: 'Top', command: () => true },
+    { id: 'top', label: 'Top' },
     {
-      group: 'insert',
+      id: 'insert',
       label: 'Insert',
       as: 'page',
       items: [
-        { id: 'figure', label: 'Figure', command: () => true },
+        { id: 'figure', label: 'Figure' },
         {
-          group: 'insert/media',
+          id: 'insert/media',
           label: 'Media',
           as: 'page',
           items: [
-            { id: 'image', label: 'Image', command: () => true },
-            { id: 'video', label: 'Video', command: () => true },
+            { id: 'image', label: 'Image' },
+            { id: 'video', label: 'Video' },
           ],
         },
       ],
@@ -321,16 +320,16 @@ describe('<pm-palette> — pages inside pages', () => {
     // registered outermost-first, so the marking has to run the other way.
     const TWO: ToolbarItem[] = [
       {
-        group: 'format',
+        id: 'format',
         label: 'Format',
         as: 'page',
-        items: [{ group: 'format/script', label: 'Script', as: 'page', items: [{ id: 'sup', label: 'Superscript', command: () => true }] }],
+        items: [{ id: 'format/script', label: 'Script', as: 'page', items: [{ id: 'sup', label: 'Superscript' }] }],
       },
       {
-        group: 'insert',
+        id: 'insert',
         label: 'Insert',
         as: 'page',
-        items: [{ group: 'insert/blocks', label: 'Blocks', as: 'page', items: [{ id: 'adm', label: 'Admonition', command: () => true }] }],
+        items: [{ id: 'insert/blocks', label: 'Blocks', as: 'page', items: [{ id: 'adm', label: 'Admonition' }] }],
       },
     ]
     const palette = makePalette(TWO)
@@ -366,12 +365,11 @@ describe('<pm-palette> — Enter', () => {
   })
 
   it('runs the highlighted row and closes', () => {
-    const command = run()
-    const palette = makePalette([{ id: 'strong', label: 'Bold', command }])
+    const palette = makePalette([{ id: 'strong', label: 'Bold' }])
     palette.show()
     key(palette, 'ArrowDown')
     key(palette, 'Enter')
-    expect(command).toHaveBeenCalledWith(STATE, palette.view.dispatch, palette.view)
+    expect(palette.run).toHaveBeenCalledWith('strong', undefined, palette.view)
     expect(palette.open).toBe(false)
   })
 
@@ -380,11 +378,10 @@ describe('<pm-palette> — Enter', () => {
     // the palette, a click ran the command and left it standing over the
     // document — so the change was invisible and the row read as dead. Found in
     // the field, on the first click anyone tried.
-    const command = run()
-    const palette = makePalette([{ id: 'strong', label: 'Bold', command }])
+    const palette = makePalette([{ id: 'strong', label: 'Bold' }])
     palette.show()
     find(palette, '[data-row]')!.click()
-    expect(command).toHaveBeenCalledWith(STATE, palette.view.dispatch, palette.view)
+    expect(palette.run).toHaveBeenCalledWith('strong', undefined, palette.view)
     expect(palette.open).toBe(false)
   })
 
@@ -397,11 +394,10 @@ describe('<pm-palette> — Enter', () => {
   })
 
   it('takes the first reachable row when nothing is highlighted', () => {
-    const command = run()
-    const palette = makePalette([{ id: 'a', label: 'A', command }])
+    const palette = makePalette([{ id: 'a', label: 'A' }])
     palette.show()
     key(palette, 'Enter')
-    expect(command).toHaveBeenCalled()
+    expect(palette.run).toHaveBeenCalledWith('a', undefined, palette.view)
   })
 })
 
@@ -419,7 +415,7 @@ describe('<pm-palette> — filtering', () => {
   })
 
   it('matches the words when the host stamped no search text', () => {
-    const palette = makePalette([{ id: 'a', label: 'Bullet list', title: 'Toggle bullet list', command: () => true }])
+    const palette = makePalette([{ id: 'a', label: 'Bullet list', title: 'Toggle bullet list' }])
     palette.show()
     type(palette, 'toggle')
     expect(labels(palette.reachableRows())).toEqual(['Bullet list'])
@@ -427,7 +423,7 @@ describe('<pm-palette> — filtering', () => {
 
   it("prefers the host's search text when there is one", () => {
     const palette = makePalette([
-      { id: 'a', label: 'Bold', search: 'bold strong heavy weight', command: () => true } as ToolbarItem,
+      { id: 'a', label: 'Bold', search: 'bold strong heavy weight' },
     ])
     palette.show()
     type(palette, 'heavy')

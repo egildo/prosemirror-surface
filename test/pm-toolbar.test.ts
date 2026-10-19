@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
 //
 // The element is editor-agnostic by design, so it is testable with a fake host:
-// `state` is an opaque token it passes back to the functions it was given.
+// `state` is an opaque token it hands to the projection it was given, and
+// everything it does goes out through the one door, `run`.
 
 import { describe, it, expect, vi } from 'vitest'
 import { PmToolbar, place, selectionAnchor, type Rect, type ToolbarItem, type ToolbarSpec } from '../src/index.js'
@@ -12,6 +13,7 @@ function makeToolbar(specs: ToolbarItem[], anchor: (view: any) => Rect | null) {
   const toolbar = document.createElement('pm-toolbar') as PmToolbar
   document.body.append(toolbar)
   toolbar.view = { state: STATE, dispatch: vi.fn() }
+  toolbar.run = vi.fn()
   toolbar.anchor = anchor
   toolbar.specs = specs
   return toolbar
@@ -28,12 +30,11 @@ describe('<pm-toolbar>', () => {
     expect(toolbar.hidden).toBe(true)
   })
 
-  it('builds buttons and separators from specs', () => {
+  it('builds buttons from specs, and a separator between two sections', () => {
     const toolbar = makeToolbar(
       [
-        { id: 'a', label: 'A', title: 'Verb A', command: () => true },
-        { separator: true },
-        { id: 'b', label: 'B', command: () => true },
+        { id: 'one', items: [{ id: 'a', label: 'A', title: 'Verb A' }] },
+        { id: 'two', items: [{ id: 'b', label: 'B' }] },
       ],
       () => null,
     )
@@ -45,7 +46,7 @@ describe('<pm-toolbar>', () => {
 
   it('hides when the anchor answers null, and places itself against the rect otherwise', () => {
     let at: Rect | null = null
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => at)
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => at)
     // A headless DOM measures every box as zero, so the element is given a real
     // one: placement is a function of the size it *measures*, and a test that
     // lets it measure nothing is testing nothing.
@@ -77,7 +78,7 @@ describe('<pm-toolbar>', () => {
     // scroll event on window, document or the scrolling element. The placement
     // itself was verified live instead (above → below at the viewport's top).
     let at: Rect | null = { top: 300, left: 400, bottom: 316, right: 500 }
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => at)
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => at)
     toolbar.getBoundingClientRect = () => ({ width: 200, height: 30 }) as DOMRect
     toolbar.sync()
     const syncs = vi.spyOn(toolbar, 'sync')
@@ -103,29 +104,31 @@ describe('<pm-toolbar>', () => {
     expect(syncs).not.toHaveBeenCalled()
   })
 
-  it('dry-runs for enabled-ness and reads active for lit-ness, with the opaque state', () => {
-    const command = vi.fn((state) => state === STATE)
-    const active = vi.fn((state) => state === STATE)
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command, active }], () => ({ top: 0, left: 0 }))
+  it('re-projects for enabled-ness and lit-ness, with the opaque state', () => {
+    const project = vi.fn((state: unknown): ToolbarItem[] => [
+      { id: 'a', label: 'A', enabled: state === STATE, pressed: state === STATE },
+    ])
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => ({ top: 0, left: 0 }))
+    toolbar.project = project
     toolbar.sync()
     const button = toolbar.shadowRoot!.querySelector('button')!
     expect(button.disabled).toBe(false)
     expect(button.getAttribute('aria-pressed')).toBe('true')
-    expect(command).toHaveBeenCalledWith(STATE)
+    expect(project).toHaveBeenCalledWith(STATE)
   })
 
-  it('runs the command with (state, dispatch, view) on click', () => {
-    const command = vi.fn(() => true)
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command }], () => ({ top: 0, left: 0 }))
+  it('runs through the door with (id, no args, view) on click', () => {
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => ({ top: 0, left: 0 }))
     toolbar.shadowRoot!.querySelector('button')!.click()
-    expect(command).toHaveBeenCalledWith(STATE, toolbar.view.dispatch, toolbar.view)
+    expect(toolbar.run).toHaveBeenCalledWith('a', undefined, toolbar.view)
   })
 
   it('hands the caret back before running, so a node view finds a focused editor', () => {
     // A no-op on a strip, where the button never took focus. Load-bearing in a
-    // palette, where focus is in the query box when the command fires.
+    // palette, where focus is in the query box when the verb runs.
     const order: string[] = []
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => (order.push('run'), true) }], () => null)
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => null)
+    toolbar.run = () => void order.push('run')
     toolbar.view.focus = () => order.push('focus')
     toolbar.shadowRoot!.querySelector('button')!.click()
     expect(order).toEqual(['focus', 'run'])
@@ -136,9 +139,8 @@ describe('<pm-toolbar>', () => {
     // the spec; this carries them to the DOM, where `content: attr(data-chord)`
     // draws an accessory and `[data-search]` filters — with no sixth hole and
     // no idea here what a chord or a query is.
-    const command = () => true
     const toolbar = makeToolbar(
-      [{ id: 'a', label: 'A', command, chord: '⇧⌘P', search: 'a bullet list', weight: 3, onPick: () => 1 } as any],
+      [{ id: 'a', label: 'A', enabled: true, chord: '⇧⌘P', search: 'a bullet list', weight: 3, onPick: () => 1 }],
       () => null,
     )
     const button = toolbar.shadowRoot!.querySelector<HTMLElement>('button')!
@@ -148,12 +150,12 @@ describe('<pm-toolbar>', () => {
     // Behaviour is not something to hand to CSS.
     expect(button.dataset.onPick).toBeUndefined()
     // And nothing this element reads for itself leaks out as an attribute.
-    expect(button.dataset.command).toBeUndefined()
+    expect(button.dataset.enabled).toBeUndefined()
     expect(button.dataset.label).toBeUndefined()
   })
 
   it('never takes focus: a mousedown on a button is prevented', () => {
-    const toolbar = makeToolbar([{ id: 'a', label: 'A', command: () => true }], () => null)
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => null)
     // `composed` because the guard sits on the host now, not the shadow root —
     // controls may be drawn into either, and a real mousedown is always
     // composed. The target is read from `composedPath()[0]`, since a listener
@@ -169,15 +171,14 @@ describe('<pm-toolbar> — sections', () => {
   const button = (id: string, over: Partial<ToolbarSpec> = {}): ToolbarSpec => ({
     id,
     label: id,
-    command: () => true,
     ...over,
   })
 
   it('draws an inline section as siblings, and separates two of them', () => {
     const toolbar = makeToolbar(
       [
-        { group: 'marks', label: 'Format', items: [button('strong'), button('em')] },
-        { group: 'history', label: 'History', items: [button('undo')] },
+        { id: 'marks', label: 'Format', items: [button('strong'), button('em')] },
+        { id: 'history', label: 'History', items: [button('undo')] },
       ],
       at,
     )
@@ -191,7 +192,7 @@ describe('<pm-toolbar> — sections', () => {
 
   it('collapses a section behind a popover when it is drawn as a menu', () => {
     const toolbar = makeToolbar(
-      [{ group: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
+      [{ id: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
       at,
     )
     const shadow = toolbar.shadowRoot!
@@ -211,7 +212,7 @@ describe('<pm-toolbar> — sections', () => {
     // `display: flex` on the panel beats it — author beats UA whatever the
     // specificity — so the collapsed section sat open from the moment it drew.
     const toolbar = makeToolbar(
-      [{ group: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
+      [{ id: 'table', label: 'Table', as: 'menu', items: [button('table:insert')] }],
       at,
     )
     //
@@ -233,17 +234,13 @@ describe('<pm-toolbar> — sections', () => {
 
   it('takes a whole section away when nothing in it is available', () => {
     let ok = true
-    const toolbar = makeToolbar(
-      [
-        {
-          group: 'table',
-          label: 'Table',
-          items: [button('table:insert', { command: () => ok, unavailable: 'hide' })],
-        },
-        { group: 'history', label: 'History', items: [button('undo')] },
-      ],
-      at,
-    )
+    const tree = (): ToolbarItem[] => [
+      { id: 'table', label: 'Table', items: [button('table:insert', { enabled: ok })] },
+      { id: 'history', label: 'History', items: [button('undo')] },
+    ]
+    const toolbar = makeToolbar(tree(), at)
+    toolbar.project = tree
+    toolbar.unavailable = 'hide'
     toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
     toolbar.sync()
     const group = toolbar.shadowRoot!.querySelector('[data-group="table"]')!
@@ -266,18 +263,18 @@ describe('<pm-toolbar> — templates', () => {
     document.body.append(toolbar)
     toolbar.innerHTML = html
     toolbar.view = { state: STATE, dispatch: vi.fn(), focus: vi.fn() }
+    toolbar.run = vi.fn()
     toolbar.anchor = at
     toolbar.specs = specs
     return toolbar
   }
 
   it('uses a supplied template, fills its holes, and renders into light DOM', () => {
-    const command = vi.fn(() => true)
     const toolbar = withTemplate(
       `<template data-as="button">
          <button type="button" class="mine"><i data-slot="icon"></i><span data-slot="label"></span></button>
        </template>`,
-      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold', command }],
+      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold' }],
     )
     // Light DOM, so the venue's own stylesheet reaches it with no ::part.
     const drawn = toolbar.querySelector('button.mine')!
@@ -289,13 +286,13 @@ describe('<pm-toolbar> — templates', () => {
     // The template owns the shape; the element still owns the behaviour, which
     // is the line that keeps this from being a framework.
     ;(drawn as HTMLElement).click()
-    expect(command).toHaveBeenCalledWith(STATE, toolbar.view.dispatch, toolbar.view)
+    expect(toolbar.run).toHaveBeenCalledWith('strong', undefined, toolbar.view)
   })
 
   it('drops the icon hole when a control has no name for one', () => {
     const toolbar = withTemplate(
       `<template data-as="button"><button type="button"><i data-slot="icon"></i><span data-slot="label"></span></button></template>`,
-      [{ id: 'undo', label: 'Undo', command: () => true }],
+      [{ id: 'undo', label: 'Undo' }],
     )
     expect(toolbar.querySelector('[data-slot="icon"]')).toBeNull()
     expect(toolbar.querySelector('[data-slot="label"]')!.textContent).toBe('Undo')
@@ -304,7 +301,7 @@ describe('<pm-toolbar> — templates', () => {
   it('falls back to the kind default for an `as` nobody taught it', () => {
     // A typo costs a switch, never a control.
     const toolbar = makeToolbar(
-      [{ id: 'strong', label: 'Bold', kind: 'toggle', as: 'swtich', command: () => true }],
+      [{ id: 'strong', label: 'Bold', kind: 'toggle', as: 'swtich' }],
       at,
     )
     expect(toolbar.shadowRoot!.querySelectorAll('button')).toHaveLength(1)
@@ -315,7 +312,6 @@ describe('<pm-toolbar> — templates', () => {
     // a venue likes; only `kind` decides behaviour. Drawn as a plain button,
     // this used to reach the select wiring — `<option>`s appended into a
     // button, a `change` listener that could never fire, no error anywhere.
-    const write = vi.fn(() => vi.fn(() => true))
     const toolbar = withTemplate(
       `<template data-as="chip"><button type="button" class="chip"><span data-slot="label"></span></button></template>`,
       [
@@ -324,12 +320,15 @@ describe('<pm-toolbar> — templates', () => {
           label: 'Block type',
           kind: 'choice',
           as: 'chip',
-          command: () => true,
-          value: () => 'h1',
-          write,
-          options: [
-            { value: 'paragraph', label: 'Paragraph' },
-            { value: 'h1', label: 'Heading 1' },
+          value: 'h1',
+          args: [
+            {
+              name: 'blocktype',
+              domain: [
+                { value: 'paragraph', label: 'Paragraph' },
+                { value: 'h1', label: 'Heading 1' },
+              ],
+            },
           ],
         },
       ],
@@ -346,6 +345,17 @@ describe('<pm-toolbar> — templates', () => {
     // container answers it once, instead of every verb inside claiming to be a
     // list item and drifting from the section that required it.
     let ok = true
+    const tree = (): ToolbarItem[] => [
+      {
+        id: 'lists',
+        label: 'Lists',
+        as: 'menu',
+        items: [
+          { id: 'bullet_list', label: 'Bulleted', enabled: ok },
+          { id: 'ordered_list', label: 'Numbered', enabled: ok },
+        ],
+      },
+    ]
     const toolbar = withTemplate(
       `<template data-as="button"><button type="button" class="ctl"><span data-slot="label"></span></button></template>
        <template data-as="menu">
@@ -354,18 +364,10 @@ describe('<pm-toolbar> — templates', () => {
            <ul popover data-slot="items"><template data-slot="item"><li role="none"></li></template></ul>
          </span>
        </template>`,
-      [
-        {
-          group: 'lists',
-          label: 'Lists',
-          as: 'menu',
-          items: [
-            { id: 'bullet_list', label: 'Bulleted', command: () => ok, unavailable: 'hide' },
-            { id: 'ordered_list', label: 'Numbered', command: () => ok, unavailable: 'hide' },
-          ],
-        },
-      ],
+      tree(),
     )
+    toolbar.project = tree
+    toolbar.unavailable = 'hide'
     const list = toolbar.querySelector('ul')!
     expect(list.querySelectorAll(':scope > li')).toHaveLength(2)
     expect(list.querySelector('li > button.ctl')).toBeTruthy()
@@ -399,10 +401,10 @@ describe('<pm-toolbar> — templates', () => {
        </template>`,
       [
         {
-          group: 'lists',
+          id: 'lists',
           label: 'Lists',
           as: 'listing',
-          items: [{ id: 'bullet_list', label: 'Bulleted', command: () => true }],
+          items: [{ id: 'bullet_list', label: 'Bulleted' }],
         },
       ],
     )
@@ -418,7 +420,7 @@ describe('<pm-toolbar> — templates', () => {
       `<template data-as="menu">
          <span class="grp"><button type="button" data-slot="face"></button><ul data-slot="items"></ul></span>
        </template>`,
-      [{ group: 'lists', label: 'Lists', as: 'menu', items: [{ id: 'bullet_list', label: 'Bulleted', command: () => true }] }],
+      [{ id: 'lists', label: 'Lists', as: 'menu', items: [{ id: 'bullet_list', label: 'Bulleted' }] }],
     )
     const panel = toolbar.querySelector('ul')!
     const face = toolbar.querySelector('[data-slot="face"]')!
@@ -432,7 +434,7 @@ describe('<pm-toolbar> — templates', () => {
     // is load-bearing rather than a nicety the way a tooltip was.
     const toolbar = withTemplate(
       `<template data-as="button"><button type="button"><i data-slot="icon"></i></button></template>`,
-      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold', command: () => true }],
+      [{ id: 'strong', label: 'Bold', title: 'Bold', icon: 'bold' }],
     )
     const drawn = toolbar.querySelector('button')!
     expect(drawn.textContent!.trim()).toBe('')
@@ -443,27 +445,32 @@ describe('<pm-toolbar> — templates', () => {
 describe('<pm-toolbar> — fields and selects', () => {
   const at = () => ({ top: 0, left: 0 })
 
-  function makeField(over: Partial<ToolbarItem> = {}) {
-    const write = vi.fn(() => vi.fn(() => true))
+  function makeField(over: Partial<ToolbarSpec> = {}) {
     let standing = 'here'
-    const toolbar = makeToolbar(
-      [
-        {
-          id: 'f',
-          kind: 'field',
-          label: 'Formula',
-          title: 'Formula',
-          command: () => true,
-          value: () => standing,
-          write,
-          ...over,
-        } as ToolbarItem,
-      ],
-      at,
-    )
+    let enabled = true
+    const tree = (): ToolbarItem[] => [
+      {
+        id: 'f',
+        kind: 'value',
+        label: 'Formula',
+        title: 'Formula',
+        args: [{ name: 'formula' }],
+        value: standing,
+        enabled,
+        ...over,
+      },
+    ]
+    const toolbar = makeToolbar(tree(), at)
+    toolbar.project = tree
     toolbar.view.focus = vi.fn()
     const input = toolbar.shadowRoot!.querySelector('input') as HTMLInputElement
-    return { toolbar, input, write, set: (value: string) => (standing = value) }
+    return {
+      toolbar,
+      input,
+      run: toolbar.run!,
+      set: (value: string) => (standing = value),
+      refuse: () => (enabled = false),
+    }
   }
 
   it('draws an input wearing the label as its placeholder', () => {
@@ -474,41 +481,41 @@ describe('<pm-toolbar> — fields and selects', () => {
     expect(toolbar.shadowRoot!.querySelector('button')).toBeNull()
   })
 
-  it('shows the uncollapsed readback, and disables from the dry run', () => {
-    const { toolbar, input } = makeField()
+  it('shows the uncollapsed readback, and disables when the projection withholds it', () => {
+    const { toolbar, input, refuse } = makeField()
     toolbar.sync()
     expect(input.value).toBe('here')
     expect(input.disabled).toBe(false)
-    toolbar.specs = [{ id: 'f', kind: 'field', label: 'F', command: () => false, value: () => 'x' }]
+    refuse()
     toolbar.sync()
     expect((toolbar.shadowRoot!.querySelector('input') as HTMLInputElement).disabled).toBe(true)
   })
 
-  it('commits on Enter through write, handing the caret back first', () => {
-    const { toolbar, input, write } = makeField()
+  it('commits on Enter through the door, handing the caret back first', () => {
+    const { toolbar, input, run } = makeField()
     toolbar.sync()
     input.value = '=SUM(A)'
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    expect(write).toHaveBeenCalledWith('=SUM(A)')
+    expect(run).toHaveBeenCalledWith('f', { formula: '=SUM(A)' }, toolbar.view)
     expect(toolbar.view.focus).toHaveBeenCalled()
   })
 
   it('never commits twice for one value — Enter, then the change behind it', () => {
-    const { toolbar, input, write } = makeField()
+    const { toolbar, input, run } = makeField()
     toolbar.sync()
     input.value = 'once'
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     input.dispatchEvent(new Event('change', { bubbles: true }))
-    expect(write).toHaveBeenCalledTimes(1)
+    expect(run).toHaveBeenCalledTimes(1)
   })
 
   it('Escape restores what stands and abandons nothing to the document', () => {
-    const { toolbar, input, write } = makeField()
+    const { toolbar, input, run } = makeField()
     toolbar.sync()
     input.value = 'typed but unwanted'
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     expect(input.value).toBe('here')
-    expect(write).not.toHaveBeenCalled()
+    expect(run).not.toHaveBeenCalled()
   })
 
   it('never fights the typist: a focused field keeps what is in it', () => {
@@ -525,7 +532,7 @@ describe('<pm-toolbar> — fields and selects', () => {
   })
 
   it('a control may take focus where a button may not', () => {
-    const { toolbar, input } = makeField()
+    const { input } = makeField()
     const onField = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
     input.dispatchEvent(onField)
     expect(onField.defaultPrevented).toBe(false)
@@ -534,7 +541,7 @@ describe('<pm-toolbar> — fields and selects', () => {
   it('stays put while engaged, though the anchor has lost sight of the editor', () => {
     let anchored: { top: number; left: number } | null = { top: 5, left: 5 }
     const toolbar = makeToolbar(
-      [{ id: 'f', kind: 'field', label: 'F', command: () => true, value: () => '', write: () => () => true }],
+      [{ id: 'f', kind: 'value', label: 'F', value: '', args: [{ name: 'f' }] }],
       () => anchored,
     )
     toolbar.sync()
@@ -549,33 +556,34 @@ describe('<pm-toolbar> — fields and selects', () => {
     expect(toolbar.hidden).toBe(true)
   })
 
-  it('hides what the dry run refuses, when the host asked for hiding', () => {
+  it('hides what the projection withholds, when the host asked for hiding', () => {
     const toolbar = makeToolbar(
       [
-        { id: 'a', label: 'A', command: () => true, unavailable: 'hide' },
-        { id: 'b', label: 'B', command: () => false, unavailable: 'hide' },
-        { id: 'c', label: 'C', command: () => false },
+        { id: 'a', label: 'A' },
+        { id: 'b', label: 'B', enabled: false },
       ],
       at,
     )
-    toolbar.sync()
     const gone = (id: string) => toolbar.shadowRoot!.querySelector(`[data-id='${id}']`)!.classList.contains('gone')
-    expect([gone('a'), gone('b'), gone('c')]).toEqual([false, true, false])
-    // 'c' asked for nothing, so it dims the way it always did.
-    expect((toolbar.shadowRoot!.querySelector("[data-id='c']") as HTMLButtonElement).disabled).toBe(true)
+    toolbar.sync()
+    // Asked for nothing, so it dims the way it always did.
+    expect([gone('a'), gone('b')]).toEqual([false, false])
+    expect((toolbar.shadowRoot!.querySelector("[data-id='b']") as HTMLButtonElement).disabled).toBe(true)
+    toolbar.unavailable = 'hide'
+    toolbar.sync()
+    expect([gone('a'), gone('b')]).toEqual([false, true])
   })
 
   it('a separator that no longer divides anything goes with its section', () => {
     const toolbar = makeToolbar(
       [
-        { id: 'a', label: 'A', command: () => false, unavailable: 'hide' },
-        { separator: true },
-        { id: 'b', label: 'B', command: () => true, unavailable: 'hide' },
-        { separator: true },
-        { id: 'c', label: 'C', command: () => false, unavailable: 'hide' },
+        { id: 'one', items: [{ id: 'a', label: 'A', enabled: false }] },
+        { id: 'two', items: [{ id: 'b', label: 'B' }] },
+        { id: 'three', items: [{ id: 'c', label: 'C', enabled: false }] },
       ],
       at,
     )
+    toolbar.unavailable = 'hide'
     toolbar.sync()
     const rules = [...toolbar.shadowRoot!.querySelectorAll('.separator')]
     // 'a' hid, so the leading rule divides nothing; 'c' hid, so the trailing
@@ -586,23 +594,26 @@ describe('<pm-toolbar> — fields and selects', () => {
 
   it('draws a select with a blank standing for "no member here"', () => {
     let member: string | null = 'body'
-    const toolbar = makeToolbar(
-      [
-        {
-          id: 'r',
-          kind: 'select',
-          label: 'Row region',
-          command: () => true,
-          value: () => member,
-          write: (value) => () => ((member = value as string), true),
-          options: [
-            { value: 'head', label: 'Header rows' },
-            { value: 'body', label: 'Data rows' },
-          ],
-        },
-      ],
-      at,
-    )
+    const tree = (): ToolbarItem[] => [
+      {
+        id: 'r',
+        kind: 'choice',
+        label: 'Row region',
+        value: member,
+        args: [
+          {
+            name: 'region',
+            domain: [
+              { value: 'head', label: 'Header rows' },
+              { value: 'body', label: 'Data rows' },
+            ],
+          },
+        ],
+      },
+    ]
+    const toolbar = makeToolbar(tree(), at)
+    toolbar.project = tree
+    toolbar.run = (_id, args) => void (member = args?.region as string)
     toolbar.view.focus = vi.fn()
     const select = toolbar.shadowRoot!.querySelector('select') as HTMLSelectElement
     expect([...select.options].map((option) => option.value)).toEqual(['', 'head', 'body'])
@@ -622,7 +633,6 @@ describe('<pm-toolbar> — a choice drawn as a dropdown', () => {
   const at = () => ({ top: 0, left: 0 })
 
   function makeDropdown(value = 'h1') {
-    const write = vi.fn(() => vi.fn(() => true))
     const toolbar = makeToolbar(
       [
         {
@@ -632,27 +642,30 @@ describe('<pm-toolbar> — a choice drawn as a dropdown', () => {
           kind: 'choice',
           as: 'dropdown',
           icon: 'blocktype',
-          command: () => true,
-          value: () => value,
-          write,
-          options: [
-            { value: 'paragraph', label: 'Paragraph', icon: 'paragraph' },
-            { value: 'h1', label: 'Heading 1', icon: 'heading-1' },
+          value,
+          args: [
+            {
+              name: 'blocktype',
+              domain: [
+                { value: 'paragraph', label: 'Paragraph', icon: 'paragraph' },
+                { value: 'h1', label: 'Heading 1', icon: 'heading-1' },
+              ],
+            },
           ],
         },
       ],
       at,
     )
     toolbar.getBoundingClientRect = () => ({ width: 100, height: 30 }) as DOMRect
-    return { toolbar, write }
+    return { toolbar, run: toolbar.run! }
   }
 
   it('draws a face and one pressable per member of the domain', () => {
     const { toolbar } = makeDropdown()
     const shadow = toolbar.shadowRoot!
     const panel = shadow.querySelector('[popover]')!
-    // Nothing new was declared: `options` was already the domain, and this is
-    // the same declaration simply not flattened into a native select.
+    // Nothing new was declared: the argument's `domain` was already there, and
+    // this is the same declaration simply not flattened into a native select.
     expect(shadow.querySelectorAll('select')).toHaveLength(0)
     expect(panel.querySelectorAll('button')).toHaveLength(2)
     expect(shadow.querySelector('[data-as="dropdown"] > button')!.getAttribute('popovertarget')).toBe(panel.id)
@@ -677,10 +690,8 @@ describe('<pm-toolbar> — a choice drawn as a dropdown', () => {
           label: 'Row region',
           kind: 'choice',
           as: 'dropdown',
-          command: () => true,
-          value: () => 'body',
-          write: () => () => true,
-          options: [{ value: 'head' }, { value: 'body' }, { value: 'foot' }] as any,
+          value: 'body',
+          args: [{ name: 'region', domain: [{ value: 'head' }, { value: 'body' }, { value: 'foot' }] }],
         },
       ],
       at,
@@ -701,14 +712,14 @@ describe('<pm-toolbar> — a choice drawn as a dropdown', () => {
   })
 
   it('commits the member you pick, and lights the one you are on', () => {
-    const { toolbar, write } = makeDropdown('h1')
+    const { toolbar, run } = makeDropdown('h1')
     toolbar.sync()
     const [paragraph, heading] = [...toolbar.shadowRoot!.querySelectorAll<HTMLElement>('[popover] button')]
     expect(heading!.getAttribute('aria-pressed')).toBe('true')
     expect(paragraph!.getAttribute('aria-pressed')).toBe('false')
 
     paragraph!.click()
-    expect(write).toHaveBeenCalledWith('paragraph')
+    expect(run).toHaveBeenCalledWith('blocktype', { blocktype: 'paragraph' }, toolbar.view)
   })
 })
 

@@ -11,7 +11,7 @@ The doctrine it implements comes from [prosemirror-verbs](https://github.com/egi
 | **`PmSurface`** | What both elements *are*, and not registered itself: templates, drawing, wiring, publishing, availability. |
 | **`<pm-toolbar>`** | A command bar that floats by the selection or docks in the flow. |
 | **`<pm-palette>`** | A modal, searchable list you walk with the arrows and descend into. |
-| **`toolbarPlugin(element, specs, anchor?)`** | The lane: a PluginView that wires either element and calls `sync()` on every state change. |
+| **`toolbarPlugin(element, { project, run }, anchor?)`** | The lane: a PluginView that hands either element the host's projection and its door, and calls `sync()` on every state change. |
 | **`selectionAnchor(view)`** | **What** a strip floats near: the rect the selection occupies, or `null` for "nothing to show". |
 | **`place(anchor, size, options)`** | **Where** it goes: pure geometry, no DOM, no editor. |
 
@@ -55,7 +55,7 @@ A surface draws a built-in for each `as` it knows. Supply a `<template data-as="
 
 > **The template owns structure and appearance. The element owns behaviour and state.**
 
-That line is what keeps this from being a framework. The element still runs the dry run that disables, reads the readback that lights or fills, dispatches on click and commits through `write`. A template that could change *behaviour* would be a framework; one that can only change shape is a stylesheet with elements in it.
+That line is what keeps this from being a framework. The element still reads the availability that disables and the readback that lights or fills, and runs the door on click and on commit. A template that could change *behaviour* would be a framework; one that can only change shape is a stylesheet with elements in it.
 
 - **Keyed by `as`, never by id.** One template per drawing, applied to every control of that drawing, is consistent by construction — a per-control override would drift the first time somebody was in a hurry.
 - **Five holes**: `icon`, `label`, `face`, `items`, `item`. A sixth has to earn its place, because this is where a template language would start. No conditionals, no loops, no expressions — a template that needs to *decide* something is describing a decision that belongs in the host's cascade, where `describe()` can explain it.
@@ -227,15 +227,17 @@ With templates supplied, a surface draws into light DOM — **including the pale
 
 ## The spec contract
 
-Either element eats a **structural shape**, not a package:
+Either element eats a **structural shape**, not a package — plain data, no functions, the shape [verbr](../../verbr)'s `project` produces:
 
 ```js
-{ id: 'strong', label: 'B', title: 'Bold (⌘B)', command, active? }                    // a button (kind omitted)
-{ id: 'link', kind: 'value', label: 'URL', type: 'url', command, value, write }       // an input
-{ id: 'region', kind: 'choice', label: 'Row region', command, value, write, options } // a select
-{ group: 'insert', label: 'Insert', as: 'menu', items: [...] }                        // a section
-{ separator: true }                                                                   // a section break
+{ id: 'strong', kind: 'toggle', label: 'Bold', icon: 'bold', enabled: true, pressed: false }  // a button
+{ id: 'link', kind: 'value', label: 'Link', value: 'https://…', args: [{ name: 'href', type: 'url' }] }  // an input
+{ id: 'region', kind: 'choice', label: 'Row region', value: 'body',
+  args: [{ name: 'region', domain: [{ value: 'head' }, { value: 'body' }] }] }  // a select
+{ id: 'insert', label: 'Insert', as: 'menu', items: [...] }                    // a section
 ```
+
+Two adjacent sections get a divider between them; there is no separator item.
 
 ### `kind` is closed, `as` is open
 
@@ -247,16 +249,18 @@ The wiring is chosen from the kind and from the element your template actually h
 
 ### A choice drawn as a `dropdown`
 
-`as: 'dropdown'` on a choice gives the classic chooser: a face wearing the member the readback answers, a `popover` of the domain, one pressable per member, the current one lit, and the panel closing when you pick. Nothing new is declared for it — `options` was already the domain, `value` the readback, `write` the commit — it is the same declaration simply not flattened into a native `<select>`, which cannot wear an icon and cannot be styled. Members are drawn as `as: 'option'`.
+`as: 'dropdown'` on a choice gives the classic chooser: a face wearing the member the readback answers, a `popover` of the domain, one pressable per member, the current one lit, and the panel closing when you pick. Nothing new is declared for it — the first argument's members were already the domain, `value` the readback, and the door the commit — it is the same declaration simply not flattened into a native `<select>`, which cannot wear an icon and cannot be styled. Members are drawn as `as: 'option'`.
 
-`command` is dry-run for enabled-ness (`command(state)`) on every kind, and run on click for a button (`command(state, dispatch, view)`); `active(state)` lights a button. A field or select shows `value(state)` — the readback **uncollapsed**, the value itself rather than a lamp — and commits through `write(value)`, which hands back a command to run. [prosemirror-verbs](https://github.com/egildo/prosemirror-verbs)' `controlTree(verbs, groups, { collect })` produces exactly this shape — but **no dependency joins the two packages**: anything of this shape drives either element.
+**The state is the host's, read through a projection.** The element is handed `project(state)` and calls it on every `sync()`: a tree of the same shape is synced in place, a different one is drawn afresh. `enabled: false` disables a control — or hides it, when the element's `unavailable` is `'hide'` — and an absent `enabled` is the authority not having spoken, so the control is offered. `pressed` lights a button. A field or select shows `value` — the readback **uncollapsed**, the value itself rather than a lamp.
+
+**Everything runs through one door**, `run(id, args, view)`, which the host supplies. A button runs with no args; a field, a select or a dropdown member commits `{ [firstArg.name]: value }` (a `number` argument is sent as a number, an emptied one as no value). A verb that needs args and was pressed without them is the door's to ask for — so a field's verb drawn as a palette row asks the way a chord would. [prosemirror-verbs](../prosemirror-verbs)' `commandFor` is such a door over verbr's `invoke`, but **no dependency joins the packages**: anything of this shape drives either element.
 
 ### Focus, and the one place the original law bends
 
 A button **never takes focus** — the element prevents `mousedown`, because a click must not disturb the selection the command acts on. A field cannot work that way: you have to be able to type into it. The law is conditional, and three things keep it safe:
 
 1. **The editor's selection is state, not focus.** It survives the blur intact, so the command still acts on exactly what the surface was serving.
-2. **The caret is handed back before the command runs** — `view.focus()`, then the command — so a node view that claims its own DOM seat during the dispatch (a spreadsheet cell) finds a focused editor when it looks. This is why a palette row works at all: focus is in the query box when it fires.
+2. **The caret is handed back before the door is called** — `view.focus()`, then `run` — so a node view that claims its own DOM seat during the dispatch (a spreadsheet cell) finds a focused editor when it looks. This is why a palette row works at all: focus is in the query box when it fires.
 3. **A strip stays put while engaged.** An anchor that reads focus (`selectionAnchor` does) reports "nothing to show" the instant a field is clicked; `sync()` therefore holds position and visibility whenever a control holds focus.
 
 A focused control also keeps whatever is in it — `sync()` never overwrites the value under a typist's hands. `Enter` commits, `Escape` restores and returns the caret, and a value is never committed twice.
@@ -265,9 +269,12 @@ A focused control also keeps whatever is in it — `sync()` never overwrites the
 
 ```js
 import { toolbarPlugin, selectionAnchor } from 'prosemirror-surface' // registers both elements
-import { controlTree } from 'prosemirror-verbs'
+import { project } from 'verbr'
+import { commandFor } from 'prosemirror-verbs'
 
-const items = (opts) => controlTree(verbs, GROUPS, opts).items
+const run = (id, args, view) => commandFor(register, id, { args, collect })(view.state, view.dispatch, view)
+const strip = { project: (state) => project(register, state, taste, { face: 'icon', includeUnavailable: true }), run }
+const list = { project: (state) => project(register, state, taste, { includeUnavailable: true }), run }
 
 const toolbar = document.createElement('pm-toolbar')
 const palette = document.createElement('pm-palette')
@@ -283,19 +290,20 @@ addEventListener('keydown', (e) => {
 
 const plugins = [
   ...otherPlugins,
-  toolbarPlugin(toolbar, items({ collect }), selectionAnchor),
+  toolbarPlugin(toolbar, strip, selectionAnchor),
   // No anchor: a palette's being-there is its own state.
-  toolbarPlugin(palette, items({ collect, face: 'words' })),
+  toolbarPlugin(palette, list),
 ]
+toolbar.unavailable = 'hide' // or 'dim', the default
 ```
 
-`face: 'words'` is prosemirror-verbs' way of saying *this surface's face is a label, not a picture* — without it a palette cannot see the verbs no strip would promote, which is most of the reason to have one.
+`face: 'icon'` is verbr's way of saying *this surface's face is a picture* — a palette leaves it at words, so it can see the verbs no strip would promote, which is most of the reason to have one.
 
-A toolbar is a form bound to the selection: readbacks are its current values, commands its setters. A palette is the same register with the curation taken off.
+A toolbar is a form bound to the selection: readbacks are its current values, the door its setter. A palette is the same register with the curation taken off.
 
 ## Status
 
-Extracted 2026-07-19 from [pm-testing-venue](https://github.com/egildo/pm-testing-venue), which remains the proving ground.
+Extracted 2026-07-19 from [pm-testing-venue](https://github.com/egildo/pm-testing-venue), which remains the proving ground. Moved to verbr's projection on 2026-10-19: specs became plain data, and the element stopped holding any verb's functions.
 
 The destination named in the original stub — *a toolbar on a selection that morphs into a command palette when summoned* — **arrived on 2026-08-03**, and not as a morph: two elements over one base turned out to be the honest shape, because a strip and a palette disagree about placement, about dismissal and about what Escape means, and about nothing else. Fields and selects landed 2026-07-27 and crossed the focus line for the first time; the palette crossed it wholesale.
 

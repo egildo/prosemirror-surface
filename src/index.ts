@@ -12,17 +12,19 @@
 // collapsed, and each surface says what collapsing means — a popover beside its
 // face, or a page you push. Same tree, same templates, two navigations.
 //
-// It depends on no registry: the specs it eats are a structural shape, which
-// prosemirror-verbs' projections happen to produce — and so may anything else.
+// It depends on no registry: the specs it eats are plain data of a structural
+// shape, which verbr's projection happens to produce — and so may anything else.
+// The host hands it a `project(state)` to re-read and a `run(id, args, view)` to
+// call; the element holds no function of any verb's.
 
 export { PmSurface } from './pm-surface.js'
-export type { ToolbarSpec, ToolbarItem, ToolbarGroup, ToolbarCommand } from './pm-surface.js'
+export type { ToolbarSpec, ToolbarItem, ToolbarGroup, ToolbarArg, ToolbarMember, ToolbarRun } from './pm-surface.js'
 export { PmToolbar } from './pm-toolbar.js'
 export type { ToolbarAnchor } from './pm-toolbar.js'
 export { PmPalette } from './pm-palette.js'
 export type { Matcher } from './pm-palette.js'
 export { toolbarPlugin } from './plugin.js'
-export type { ToolbarLike } from './plugin.js'
+export type { ToolbarLike, Projection } from './plugin.js'
 export { selectionAnchor } from './anchor.js'
 export { place } from './place.js'
 export type { Rect, Size, Placement, PlaceOptions } from './place.js'

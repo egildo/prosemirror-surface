@@ -13,24 +13,40 @@
 // beside its face for a strip, a page you push for a palette. Same tree, same
 // templates, two navigations, and neither one written twice.
 //
-// `state` is a token: it is passed to functions this element was given and never
-// inspected. `any` below is the honest type of "not mine to know" — a spec
-// produced by prosemirror-verbs' projections fits structurally, and so does
-// anything else of this shape. No package joins these two; a shape does.
+// A spec is **plain data** — the shape verbr's projection produces: what a
+// control is, how to draw it, and what the host's state reads right now
+// (`enabled`, `pressed`, `value`). No functions ride on it. The host re-projects
+// on every state change (`project`) and the element runs everything through one
+// door it was handed (`run(id, args, view)`), so a button cannot do what the
+// keyboard would refuse. `any` below is the honest type of "not mine to know".
+// No package joins these; a shape does.
 
 import { place } from './place.js'
 
-/** A command as a surface understands it: opaque, dry-runnable. */
-export type ToolbarCommand = (state: any, dispatch?: any, view?: any) => boolean
+/** One member of a choice's domain. */
+export interface ToolbarMember {
+  value: string
+  label?: string
+  icon?: string
+  [extra: string]: unknown
+}
 
-/** One control, or a section separator. */
+/** An argument, as the projection states it. A choice's members are inline in
+ *  `domain`, or read from the host's state into `members`. */
+export interface ToolbarArg {
+  name: string
+  type?: string
+  label?: string
+  domain?: string | ToolbarMember[]
+  members?: ToolbarMember[]
+  [extra: string]: unknown
+}
+
+/** One control: verbr's `Control`, structurally. */
 export interface ToolbarSpec {
   id: string
   label: string
   title?: string
-  command: ToolbarCommand
-  active?: (state: any) => boolean
-  keys?: string[]
   /** What it **is**, deduced by whoever projected it: `action`, `toggle`,
    *  `choice`, `value`. Absent means a button — the shape this began with. */
   kind?: string
@@ -42,21 +58,30 @@ export interface ToolbarSpec {
    *  icon hole as `data-icon` and CSS decides whether that is an SVG mask, an
    *  icon font, or a letter. */
   icon?: string
-  /** The uncollapsed readback: what a field shows, which member a select holds. */
-  value?: (state: any) => unknown
-  /** Commit: hand it what the control holds, it hands back a command to run. */
-  write?: (value: unknown) => ToolbarCommand
-  /** A select's members. */
-  options?: { value: string; label: string }[]
-  /** A field's input type ('text', 'number', 'url', …). */
-  type?: string
+  /** May it run now? `false` is withheld; absent is offered, or not yet known. */
+  enabled?: boolean
+  /** A toggle's state. */
+  pressed?: boolean
+  /** A value's or a choice's current reading: what a field shows, which member a select holds. */
+  value?: unknown
+  /** What running it needs. The first argument is what a field or a choice commits. */
+  args?: ToolbarArg[]
   /** How much room this control's domain needs: 'glyph' | 'bounded' | 'unbounded'. */
   room?: string
-  /** What to do when the dry run says no: 'dim' (default) or 'hide'. */
-  unavailable?: 'dim' | 'hide'
   /** What a palette's query matches against. Absent and it is composed from the
    *  words — see `PmPalette.searchText`. */
   search?: string
+  /** Every other attribute a host's taste wrote — published to the DOM as `data-*`. */
+  [attr: string]: unknown
+}
+
+/** The door: run this verb, with these args or with none (the host then asks for them). */
+export type ToolbarRun = (id: string, args: Record<string, unknown> | undefined, view: any) => void
+
+/** The members a choice offers: read from the state, or declared inline. */
+export const membersOf = (spec: ToolbarSpec): ToolbarMember[] => {
+  const arg = spec.args?.[0]
+  return arg?.members ?? (Array.isArray(arg?.domain) ? arg.domain : [])
 }
 
 /** A section: controls and further sections, drawn per its own `as`.
@@ -65,17 +90,27 @@ export interface ToolbarSpec {
  *  behind one face. They are two layouts of one tree, which is the whole reason
  *  a surface eats a tree at all. */
 export interface ToolbarGroup {
-  group: string
-  label: string
+  id: string
+  label?: string
   as?: string
   icon?: string
   items: ToolbarItem[]
+  [attr: string]: unknown
 }
 
-export type ToolbarItem = ToolbarSpec | ToolbarGroup | { separator: true }
+export type ToolbarItem = ToolbarSpec | ToolbarGroup
 
 export const isGroup = (item: ToolbarItem): item is ToolbarGroup => 'items' in item
-export const isSeparator = (item: ToolbarItem): item is { separator: true } => 'separator' in item
+
+// What the tree looks like, ids only. The same shape re-projected is synced in
+// place; a different one is drawn afresh.
+const shapeOf = (items: ToolbarItem[]): string =>
+  items.map((item) => (isGroup(item) ? `${item.id}[${shapeOf(item.items)}]` : item.id)).join(',')
+
+function index(items: ToolbarItem[], into = new Map<string, ToolbarSpec>()): Map<string, ToolbarSpec> {
+  for (const item of items) isGroup(item) ? index(item.items, into) : into.set(item.id, item)
+  return into
+}
 
 // ── The two vocabularies, and why only one of them is closed ─────────────────
 //
@@ -125,28 +160,30 @@ function wiringFor(spec: ToolbarSpec, control: HTMLElement, drawn: string): Wiri
   // A choice that is not a `<select>` is a face plus one member per option.
   if (spec.kind === 'choice' || drawn === 'dropdown') return 'dropdown'
   // Anything else is pressable — including a `value` verb a venue chose to draw
-  // as a button, which is not a mistake: that spec's command is the collecting
-  // one, so the button asks for the value the way a chord would.
+  // as a button, which is not a mistake: it runs with no args, so the host's
+  // door asks for the value the way a chord would.
   return 'pressable'
 }
 
 // What a surface reads for itself. Everything else on a spec is a host's own
 // word and gets published to the DOM untouched — see `publish`.
+// What the state decides — `enabled`, `cause`, `reason`, `pressed`, `value`,
+// `pending` — is read at every sync and never frozen into an attribute.
 const SPEC_OWNED = new Set([
   'id',
   'label',
   'title',
-  'command',
-  'active',
   'keys',
   'kind',
   'as',
   'icon',
+  'enabled',
+  'cause',
+  'reason',
+  'pending',
+  'pressed',
   'value',
-  'write',
-  'options',
-  'type',
-  'unavailable',
+  'args',
 ])
 
 let popoverSeq = 0
@@ -259,6 +296,9 @@ export interface Drawn {
   panel?: HTMLElement | null
   /** How it behaves — from its kind, never from its `as`. */
   wiring?: Wiring
+  /** For a member of a dropdown: the choice it belongs to, and the value it holds. */
+  of?: string
+  member?: string
 }
 
 export abstract class PmSurface extends HTMLElement {
@@ -284,6 +324,16 @@ export abstract class PmSurface extends HTMLElement {
 
   /** The opaque host — assigned by the driving plugin. */
   view: any = null
+  /** The host's state, projected: called at every sync, with `view.state`. */
+  project: ((state: any) => ToolbarItem[]) | null = null
+  /** The one door every control runs through. */
+  run: ToolbarRun | null = null
+  /** What a withheld control does: `dim` (the default) or `hide`. Hiding is what
+   *  lets one surface answer several selections without carrying every group at
+   *  once; dimming is what keeps its width from jumping. The host's call. */
+  unavailable: 'dim' | 'hide' = 'dim'
+  // The latest projection, by id — what `sync` reads.
+  #live = new Map<string, ToolbarSpec>()
 
   constructor() {
     super()
@@ -314,6 +364,7 @@ export abstract class PmSurface extends HTMLElement {
 
   set specs(value: ToolbarItem[] | null | undefined) {
     this.#specs = value ?? []
+    this.#live = index(this.#specs)
     this.build()
   }
 
@@ -359,6 +410,9 @@ export abstract class PmSurface extends HTMLElement {
   // Walk the tree. A divider falls between two adjacent sections — which a
   // surface that has no use for one declines by answering null.
   //
+  // (A separator item is gone: sections are the tree's own structure now, and
+  // the rule between two of them is drawn here.)
+  //
   // `wrap` is the container's own template for its children, if it declared one.
   // A `<ul>` may only hold `<li>`, and that is the **container's** rule, not the
   // item's opinion — so it is answered here, where the container is, rather than
@@ -373,10 +427,7 @@ export abstract class PmSurface extends HTMLElement {
     let previousWasGroup = false
     for (const item of items) {
       let node: HTMLElement | null
-      if (isSeparator(item)) {
-        node = this.divider()
-        previousWasGroup = false
-      } else if (isGroup(item)) {
+      if (isGroup(item)) {
         if (previousWasGroup) {
           const rule = this.divider()
           if (rule) parent.append(this.wrap(wrap, rule))
@@ -471,7 +522,8 @@ export abstract class PmSurface extends HTMLElement {
       : document.createElement(this.collapses(as, null) ? 'span' : 'div')
     if (!template) root.className = 'group'
     root.dataset.as = as
-    root.dataset.group = group.group
+    root.dataset.group = group.id
+    const named = { ...group, label: group.label ?? group.id }
 
     const face = root.querySelector<HTMLElement>('[data-slot="face"]')
     const hole = root.querySelector<HTMLElement>('[data-slot="items"]')
@@ -485,14 +537,14 @@ export abstract class PmSurface extends HTMLElement {
       const panel = hole ?? document.createElement('div')
       if (!hole) root.append(panel)
       this.collapse(button, panel, group)
-      this.face(button, group)
+      this.face(button, named)
       this.members.set(root, this.draw(group.items, panel, templates, this.itemTemplate(panel)))
     } else {
       // An inline section is an arrangement, not a thing with a face. It gets one
       // only if a template asked for one (a heading over a palette column);
       // writing a label onto a bare section would put a stray text node ahead of
       // the controls.
-      if (face) this.face(face, group)
+      if (face) this.face(face, named)
       const into = hole ?? root
       this.members.set(root, this.draw(group.items, into, templates, this.itemTemplate(into)))
     }
@@ -526,7 +578,11 @@ export abstract class PmSurface extends HTMLElement {
     }
   }
 
-  protected control(spec: ToolbarSpec, templates: Map<string, HTMLTemplateElement>): HTMLElement {
+  protected control(
+    spec: ToolbarSpec,
+    templates: Map<string, HTMLTemplateElement>,
+    press: () => void = () => this.press(spec),
+  ): HTMLElement {
     const as = spec.as ?? DEFAULT_AS[spec.kind ?? 'action'] ?? 'button'
     const template = templates.get(as)
     // An `as` this package has never heard of falls back to the kind's own
@@ -552,7 +608,7 @@ export abstract class PmSurface extends HTMLElement {
     if (wiring === 'field') this.#wireField(control as HTMLInputElement, spec)
     else if (wiring === 'picker') this.#wirePicker(control as HTMLSelectElement, spec)
     else if (wiring === 'dropdown') this.#wireDropdown(control, panel, spec, templates)
-    else this.wirePressable(control, spec)
+    else this.wirePressable(control, press)
 
     if (wiring !== 'field' && wiring !== 'picker') this.face(control, spec)
     // On both, when a template put them apart, so a stylesheet can reach either
@@ -574,8 +630,8 @@ export abstract class PmSurface extends HTMLElement {
   // here knows what a chord is. It is the icon rule one turn further out: the
   // value travels, and whoever draws decides what it looks like.
   //
-  // Strings and numbers only. A function is behaviour, and behaviour is not
-  // something to hand to CSS.
+  // Strings and numbers only, and only what the state does not decide — those
+  // are synced, never frozen here.
   #publish(node: HTMLElement, spec: ToolbarSpec) {
     for (const [key, value] of Object.entries(spec)) {
       if (SPEC_OWNED.has(key)) continue
@@ -599,8 +655,8 @@ export abstract class PmSurface extends HTMLElement {
   }
 
   // A choice collapsed behind its current member. Everything it needs was already
-  // on the spec — `options` is the domain, `value` the readback, `write` the
-  // commit — which is why this is a drawing and not a feature.
+  // on the spec — the first argument's members, the `value` read back, and the
+  // door to commit through — which is why this is a drawing and not a feature.
   #wireDropdown(
     face: HTMLElement,
     panel: HTMLElement | null,
@@ -610,40 +666,36 @@ export abstract class PmSurface extends HTMLElement {
     if (!panel) {
       // A template drew a choice with no items hole: it wants the face and
       // nothing else. Honour it rather than inventing a panel it did not ask for.
-      this.wirePressable(face, spec)
+      this.wirePressable(face, () => this.press(spec))
       return
     }
     this.wirePopover(face, panel)
     const item = this.itemTemplate(panel)
-    for (const option of spec.options ?? []) {
-      const member = option as { value: string; label: string; icon?: string }
+    for (const member of membersOf(spec)) {
       // A member is not a verb of its own — it is this verb, held to one value —
       // so it is drawn as an ordinary control and wears the venue's own button
       // template for free. Its id is keyed apart from `expand`'s `base:member`
       // convention on purpose: a host drawing the base *and* its conjugated forms
       // is a real arrangement, and these must not quietly overwrite those.
+      const id = `${spec.id}::${member.value}`
       const drawn = this.control(
         {
-          id: `${spec.id}::${member.value}`,
+          id,
           label: member.label ?? member.value,
           ...(member.icon ? { icon: member.icon } : {}),
           kind: 'action',
           as: 'option',
-          command: (state, dispatch) => {
-            // Available exactly when the verb is: the parent answers for its own
-            // members, and asking the same question twice invites two answers.
-            if (!dispatch) return spec.command(state)
-            this.commit(spec, member.value)
-            // A chooser's panel has spent its purpose the moment you choose.
-            panel.hidePopover?.()
-            return true
-          },
-          // Lit when it is the one the readback answers, so the panel shows where
-          // you are and not only where you may go.
-          active: (state) => String(spec.value?.(state) ?? '') === member.value,
         },
         templates,
+        () => {
+          this.commit(spec, member.value)
+          // A chooser's panel has spent its purpose the moment you choose.
+          panel.hidePopover?.()
+        },
       )
+      // Available exactly when the verb is, and lit when it is the one the
+      // readback answers — the parent answers for its own members (see `sync`).
+      Object.assign(this.controls.get(id)!, { of: spec.id, member: member.value })
       panel.append(this.wrap(item, drawn))
     }
   }
@@ -654,16 +706,19 @@ export abstract class PmSurface extends HTMLElement {
     return button
   }
 
-  protected wirePressable(node: HTMLElement, spec: ToolbarSpec) {
-    node.addEventListener('click', () => {
-      // The caret goes back first, exactly as `commit` has always done it. On a
-      // strip this is a no-op — a button never took focus, so the editor still
-      // has it. In a palette focus is in the query box, and a node view that
-      // claims its own DOM seat during the dispatch (a spreadsheet cell) would
-      // otherwise look up mid-transaction and find no focused editor.
-      this.view?.focus?.()
-      spec.command(this.view.state, this.view.dispatch, this.view)
-    })
+  protected wirePressable(node: HTMLElement, press: () => void) {
+    node.addEventListener('click', press)
+  }
+
+  // Run it with no args — a doing runs, and an arg-verb drawn as a button asks
+  // through the host's door the way a chord would. The caret goes back first,
+  // exactly as `commit` does it. On a strip this is a no-op — a button never
+  // took focus. In a palette focus is in the query box, and a node view that
+  // claims its own DOM seat during the dispatch (a spreadsheet cell) would
+  // otherwise look up mid-transaction and find no focused editor.
+  protected press(spec: ToolbarSpec) {
+    this.view?.focus?.()
+    this.run?.(spec.id, undefined, this.view)
   }
 
   // A field is the collector, inlined: it shows the value the verb reads back and
@@ -671,14 +726,16 @@ export abstract class PmSurface extends HTMLElement {
   // nothing.
   #input(spec: ToolbarSpec): HTMLInputElement {
     const input = document.createElement('input')
-    input.type = spec.type === 'number' ? 'number' : 'text'
+    input.type = spec.args?.[0]?.type === 'number' ? 'number' : 'text'
     if (spec.room) input.dataset.room = spec.room
     return input
   }
 
   #wireField(input: HTMLInputElement, spec: ToolbarSpec) {
     if (spec.room) input.dataset.room = spec.room
-    input.placeholder = spec.label
+    // The argument's own words where one was declared — the very words a
+    // prompting collector would have asked with — else the verb's.
+    input.placeholder = spec.args?.[0]?.label ?? spec.label
     input.setAttribute('aria-label', spec.title ?? spec.label)
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
@@ -708,7 +765,7 @@ export abstract class PmSurface extends HTMLElement {
       blank.value = ''
       blank.textContent = '—'
       select.append(blank)
-      for (const option of spec.options ?? []) {
+      for (const option of membersOf(spec)) {
         const el = document.createElement('option')
         el.value = option.value
         el.textContent = option.label ?? option.value
@@ -723,17 +780,30 @@ export abstract class PmSurface extends HTMLElement {
   // Hand the caret back *before* running: a host that moves focus onto its own
   // components during the dispatch (a node view claiming a cell) needs to see a
   // focused editor while the transaction is applied, not one microtask later.
+  //
+  // A field holds text; a `number` argument is sent as a number, and an emptied
+  // one is sent as no value at all, which the verb reads as "clear".
   protected commit(spec: ToolbarSpec, value: string) {
     if (this.shown.get(spec.id) === value) return
-    const command = spec.write?.(value)
-    if (!command) return
+    const arg = spec.args?.[0]
+    if (!arg) return
     this.shown.set(spec.id, value)
     this.view?.focus?.()
-    command(this.view.state, this.view.dispatch, this.view)
+    const args = arg.type !== 'number' ? { [arg.name]: value } : value.trim() === '' ? {} : { [arg.name]: Number(value) }
+    this.run?.(spec.id, args, this.view)
   }
 
-  /** Called by the host whenever its state changes. */
+  /** Called by the host whenever its state changes. Re-projects, redraws only
+   *  when the tree changed shape, and syncs what the state decides. */
   sync() {
+    const fresh = this.project && this.view ? this.project(this.view.state) : null
+    if (fresh) {
+      if (shapeOf(fresh) !== shapeOf(this.#specs)) this.specs = fresh
+      else {
+        this.#specs = fresh
+        this.#live = index(fresh)
+      }
+    }
     this.syncControls()
     this.prune()
   }
@@ -742,38 +812,43 @@ export abstract class PmSurface extends HTMLElement {
   // whatever the surface is.
   protected syncControls() {
     const focused = this.focused()
-    for (const { root, control, spec, wiring } of this.controls.values()) {
-      const available = !!spec.command(this.view.state)
+    for (const drawn of this.controls.values()) {
+      const { root, control, wiring } = drawn
+      // What the state says now: the latest projection of this control — or, for
+      // a dropdown's member, of the choice it belongs to.
+      const spec = this.#live.get(drawn.of ?? drawn.spec.id) ?? drawn.spec
+      // Absent `enabled` is the authority not having spoken: offered, never dimmed.
+      const available = spec.enabled !== false
       ;(control as HTMLInputElement).disabled = !available
-      // Dim or vanish, the host's call. Hiding is what lets one surface answer
-      // several selections without carrying every group at once; dimming is what
-      // keeps its width from jumping. Neither is universally right, so neither is
-      // decided here. On the wrapper a container's item template put it in, when
-      // there is one — a hidden control must take its `<li>` with it.
-      ;(this.wrapped.get(root) ?? root).classList.toggle('gone', !available && spec.unavailable === 'hide')
-      if (wiring === 'dropdown') {
+      // Dim or vanish, the host's call (`unavailable`). On the wrapper a
+      // container's item template put it in, when there is one — a hidden
+      // control must take its `<li>` with it.
+      ;(this.wrapped.get(root) ?? root).classList.toggle('gone', !available && this.unavailable === 'hide')
+      if (drawn.member !== undefined) {
+        // Lit when it is the one the readback answers, so the panel shows where
+        // you are and not only where you may go.
+        control.setAttribute('aria-pressed', String(String(spec.value ?? '') === drawn.member))
+      } else if (wiring === 'dropdown') {
         // The face wears the member the readback answers, and falls back to the
         // verb's own name and picture when it answers none.
-        const shown = String(spec.value?.(this.view.state) ?? '')
+        const shown = String(spec.value ?? '')
         this.shown.set(spec.id, shown)
-        const member = spec.options?.find((option) => option.value === shown) as
-          | { value: string; label?: string; icon?: string }
-          | undefined
+        const member = membersOf(spec).find((option) => option.value === shown)
         // A domain member may carry only its value — a plugin naming its own
         // members is taste, and plenty of them decline.
         const named = member ? (member.label ?? member.value) : null
         this.face(control, {
           label: named ?? spec.label,
-          icon: member?.icon ?? spec.icon,
+          ...(member?.icon ?? spec.icon ? { icon: (member?.icon ?? spec.icon)! } : {}),
           title: named ? `${spec.title ?? spec.label}: ${named}` : (spec.title ?? spec.label),
         })
-      } else if (spec.write) {
-        const shown = String(spec.value?.(this.view.state) ?? '')
+      } else if (wiring === 'field' || wiring === 'picker') {
+        const shown = String(spec.value ?? '')
         this.shown.set(spec.id, shown)
         // Never fight the typist: a focused control keeps what is in it.
         if (focused !== control) (control as HTMLInputElement).value = shown
       } else {
-        const lit = String(spec.active?.(this.view.state) ?? false)
+        const lit = String(spec.pressed ?? false)
         // `aria-pressed` for a button, `aria-checked` for a switch — the same
         // reading, in whichever word the role the template chose expects.
         control.setAttribute(control.getAttribute('role') === 'switch' ? 'aria-checked' : 'aria-pressed', lit)

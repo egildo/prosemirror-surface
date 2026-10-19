@@ -19,7 +19,7 @@ import { PmSurface, controlSheet } from './pm-surface.js'
 import type { ToolbarGroup } from './pm-surface.js'
 
 export type {
-  ToolbarCommand,
+  ToolbarRun,
   ToolbarSpec,
   ToolbarGroup,
   ToolbarItem,
