@@ -227,7 +227,7 @@ With templates supplied, a surface draws into light DOM — **including the pale
 
 ## The spec contract
 
-Either element eats a **structural shape**, not a package — plain data, no functions, the shape [verbr](../../verbr)'s `project` produces:
+Either element eats a **structural shape**, not a package — plain data, no functions, the shape [verbr](https://github.com/egildo/verbr)'s `project` produces:
 
 ```js
 { id: 'strong', kind: 'toggle', label: 'Bold', icon: 'bold', enabled: true, pressed: false }  // a button
