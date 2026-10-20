@@ -187,6 +187,14 @@ const SPEC_OWNED = new Set([
 ])
 
 let popoverSeq = 0
+let surfaceSeq = 0
+
+// The Invoker Commands API: a `<button command commandfor>` fires a `CommandEvent`
+// at the element it names when activated. `--` is the platform's reserved
+// prefix for commands it does not own, which is exactly a host's verbs (verbr's
+// `outlet` spells the same grammar). Where the API is missing, a click listener.
+const INVOKERS = typeof HTMLButtonElement !== 'undefined' && 'command' in HTMLButtonElement.prototype
+const CUSTOM_PREFIX = '--'
 
 /** The shared sheet: what a *control* looks like, at any altitude. A surface's
  *  own layout is its own sheet, adopted after this one. */
@@ -321,6 +329,12 @@ export abstract class PmSurface extends HTMLElement {
   // value it was merely handed by sync, and Enter must not commit twice because
   // `change` fires behind it.
   protected shown = new Map<string, string>()
+  // What each pressable does when summoned — by its `command` through the
+  // outlet, or by a click where the platform has no invokers.
+  protected presses = new Map<string, () => void>()
+  // The invokee for buttons drawn into the shadow root, which cannot name the
+  // host (an id reference stays in its own tree).
+  #seat: HTMLElement | null = null
 
   /** The opaque host — assigned by the driving plugin. */
   view: any = null
@@ -352,6 +366,43 @@ export abstract class PmSurface extends HTMLElement {
       if (isControl(event.composedPath()[0] ?? null)) return
       event.preventDefault()
     })
+
+    // The outlet: a command fired at this element summons the control it names,
+    // or, for an id this element never drew, the verb itself through the door.
+    // So a button anywhere in the page summons a verb by attribute alone —
+    // `<button command="--strong" commandfor="<this id>">` — and nothing
+    // listens for clicks.
+    this.addEventListener('command', this.#onCommand)
+  }
+
+  #onCommand = (event: Event) => {
+    const command = (event as Event & { command?: string }).command ?? ''
+    if (!command.startsWith(CUSTOM_PREFIX)) return
+    const id = command.slice(CUSTOM_PREFIX.length)
+    if (!id) return
+    const press = this.presses.get(id)
+    if (press) press()
+    else {
+      this.view?.focus?.()
+      this.run?.(id, undefined, this.view)
+    }
+  }
+
+  /** The element a drawn button names in `commandfor`: this element for a button
+   *  in the light DOM, a hidden seat in the shadow root for one drawn there. */
+  protected outletFor(node: HTMLElement): HTMLElement {
+    if (node.getRootNode() !== this.shadow) {
+      if (!this.id) this.id = `pm-surface-${(surfaceSeq += 1)}`
+      return this
+    }
+    if (!this.#seat) {
+      this.#seat = document.createElement('span')
+      this.#seat.id = 'outlet'
+      this.#seat.hidden = true
+      this.#seat.addEventListener('command', this.#onCommand)
+    }
+    if (this.#seat.parentNode !== this.shadow) this.shadow.append(this.#seat)
+    return this.#seat
   }
 
   // Where a control lives when it holds focus: the shadow root sees its own, and
@@ -395,6 +446,7 @@ export abstract class PmSurface extends HTMLElement {
     this.groups = []
     this.members.clear()
     this.shown.clear()
+    this.presses.clear()
 
     if (templates.size) {
       this.shadow.replaceChildren(document.createElement('slot'))
@@ -608,7 +660,7 @@ export abstract class PmSurface extends HTMLElement {
     if (wiring === 'field') this.#wireField(control as HTMLInputElement, spec)
     else if (wiring === 'picker') this.#wirePicker(control as HTMLSelectElement, spec)
     else if (wiring === 'dropdown') this.#wireDropdown(control, panel, spec, templates)
-    else this.wirePressable(control, press)
+    else this.wirePressable(control, press, spec.id)
 
     if (wiring !== 'field' && wiring !== 'picker') this.face(control, spec)
     // On both, when a template put them apart, so a stylesheet can reach either
@@ -666,7 +718,7 @@ export abstract class PmSurface extends HTMLElement {
     if (!panel) {
       // A template drew a choice with no items hole: it wants the face and
       // nothing else. Honour it rather than inventing a panel it did not ask for.
-      this.wirePressable(face, () => this.press(spec))
+      this.wirePressable(face, () => this.press(spec), spec.id)
       return
     }
     this.wirePopover(face, panel)
@@ -706,8 +758,18 @@ export abstract class PmSurface extends HTMLElement {
     return button
   }
 
-  protected wirePressable(node: HTMLElement, press: () => void) {
-    node.addEventListener('click', press)
+  /** A pressable is summoned by **command**: the button carries `command="--<id>"`
+   *  and `commandfor` naming the outlet, and the platform fires the event there
+   *  on activation — a mouse, a key, a synthetic click. Without an id to name,
+   *  or without the API, a click listener. */
+  protected wirePressable(node: HTMLElement, press: () => void, id?: string) {
+    if (id === undefined || !INVOKERS || !(node instanceof HTMLButtonElement)) {
+      node.addEventListener('click', press)
+      return
+    }
+    this.presses.set(id, press)
+    node.setAttribute('command', CUSTOM_PREFIX + id)
+    node.setAttribute('commandfor', this.outletFor(node).id)
   }
 
   // Run it with no args — a doing runs, and an arg-verb drawn as a button asks

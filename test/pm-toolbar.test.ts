@@ -123,6 +123,28 @@ describe('<pm-toolbar>', () => {
     expect(toolbar.run).toHaveBeenCalledWith('a', undefined, toolbar.view)
   })
 
+  it('is the outlet: a command fired at it summons the verb it names, through the door', () => {
+    const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => null)
+    toolbar.view.focus = vi.fn()
+    // What the platform fires at the element a `<button command="--a" commandfor>`
+    // names, shaped as a CommandEvent is; a headless DOM has no invokers of its own.
+    const summon = (command: string) => {
+      const event = new Event('command')
+      Object.defineProperty(event, 'command', { value: command })
+      toolbar.dispatchEvent(event)
+    }
+    summon('--a')
+    expect(toolbar.run).toHaveBeenCalledWith('a', undefined, toolbar.view)
+    // An id this element never drew still goes through the door: a page's own
+    // button may summon any verb the host holds.
+    summon('--elsewhere')
+    expect(toolbar.run).toHaveBeenLastCalledWith('elsewhere', undefined, toolbar.view)
+    expect(toolbar.view.focus).toHaveBeenCalledTimes(2)
+    // The platform's own commands are not verbs.
+    summon('show-popover')
+    expect(toolbar.run).toHaveBeenCalledTimes(2)
+  })
+
   it('hands the caret back before running, so a node view finds a focused editor', () => {
     // A no-op on a strip, where the button never took focus. Load-bearing in a
     // palette, where focus is in the query box when the verb runs.
