@@ -123,6 +123,23 @@ describe('<pm-toolbar>', () => {
     expect(toolbar.run).toHaveBeenCalledWith('a', undefined, toolbar.view)
   })
 
+  it('lights a value drawn as a button while it holds a value', () => {
+    let value: unknown = null
+    // Shown (an anchor with a rect), or the strip hides before it syncs its controls.
+    const toolbar = makeToolbar([{ id: 'link', kind: 'value', as: 'button', label: 'Link' }], () => ({ top: 100, left: 100, bottom: 110, right: 160 }))
+    toolbar.getBoundingClientRect = () => ({ width: 60, height: 28 }) as DOMRect
+    toolbar.project = () => [{ id: 'link', kind: 'value', as: 'button', label: 'Link', ...(value != null ? { value } : {}) }]
+    toolbar.sync()
+    const button = toolbar.shadowRoot!.querySelector('button')!
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+    value = 'https://example.org'
+    toolbar.sync()
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    value = ''
+    toolbar.sync()
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('is the outlet: a command fired at it summons the verb it names, through the door', () => {
     const toolbar = makeToolbar([{ id: 'a', label: 'A' }], () => null)
     toolbar.view.focus = vi.fn()

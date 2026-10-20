@@ -912,7 +912,10 @@ export abstract class PmSurface extends HTMLElement {
         // Never fight the typist: a focused control keeps what is in it.
         if (focused !== control) (control as HTMLInputElement).value = shown
       } else {
-        const lit = String(spec.pressed ?? false)
+        // A toggle is lit by its readback. A value drawn as a button (a link,
+        // asked for through the collector rather than a field) is lit while it
+        // holds one: the caret stands in a link, the button says so.
+        const lit = String(spec.kind === 'value' ? spec.value != null && spec.value !== '' : (spec.pressed ?? false))
         // `aria-pressed` for a button, `aria-checked` for a switch — the same
         // reading, in whichever word the role the template chose expects.
         control.setAttribute(control.getAttribute('role') === 'switch' ? 'aria-checked' : 'aria-pressed', lit)
