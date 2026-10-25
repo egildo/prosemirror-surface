@@ -65,6 +65,18 @@ describe('<pm-toolbar>', () => {
     expect(toolbar.style.left).toBe('8px') // pulled back to the viewport margin
   })
 
+  it('measures itself with its controls drawn, the first time it shows', () => {
+    // A strip that has never shown has no controls yet, so a box measured
+    // before they are drawn is the padding alone, and the strip stood over the
+    // line it serves until a second sync re-measured it.
+    const toolbar = makeToolbar([], () => ({ top: 300, left: 400, bottom: 316, right: 500 }))
+    toolbar.project = () => [{ id: 'a', label: 'A' }]
+    toolbar.getBoundingClientRect = () => ({ width: 200, height: toolbar.shadowRoot!.querySelector('button') ? 30 : 10 }) as DOMRect
+    toolbar.sync()
+    expect(toolbar.dataset.side).toBe('above')
+    expect(toolbar.style.top).toBe('262px') // anchor.top - height - gap, with the controls' height
+  })
+
   it('re-places itself on scroll and resize, and stops when it leaves the document', () => {
     // A strip pinned in viewport coordinates detaches from what it serves the
     // moment the page scrolls, and no transaction fires to tell it. Scrolling

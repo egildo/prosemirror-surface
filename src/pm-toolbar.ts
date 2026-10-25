@@ -137,13 +137,13 @@ export class PmToolbar extends PmSurface {
       this.hidden = true
       return
     }
-    if (at) {
-      this.hidden = false
-      // A docked bar takes its position from the document, not from us; the
-      // anchor's answer still decides whether it is there at all.
-      if (this.placement === 'anchored') this.#position(at)
-    }
+    if (at) this.hidden = false
+    // The controls are drawn before the strip is measured: one that has never
+    // shown has none yet, and its box would be the padding alone.
     super.sync()
+    // A docked bar takes its position from the document, not from us; the
+    // anchor's answer still decides whether it is there at all.
+    if (at && this.placement === 'anchored') this.#position(at)
   }
 
   protected override prune() {
